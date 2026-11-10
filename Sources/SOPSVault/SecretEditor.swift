@@ -15,7 +15,7 @@ struct SecretEditor: View {
         VStack(alignment: .leading, spacing: 20) {
             Label(draft.entry == nil ? "Nueva clave" : "Editar clave", systemImage: "key.horizontal")
                 .font(.title2.weight(.semibold))
-            Text("SOPS cifra el cambio antes de reemplazar el archivo original.")
+            Text("El cambio queda pendiente hasta que toques «Guardar cambios».")
                 .font(.callout).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 7) {
                 Text("Nombre de la clave").font(.callout.weight(.medium))
@@ -50,18 +50,16 @@ struct SecretEditor: View {
                 }
             }
             if let validation { Text(validation).foregroundStyle(.red).font(.callout) }
-            if let error = model.error { Text(error).foregroundStyle(.red).font(.callout) }
             Divider()
             HStack {
                 Image(systemName: "lock.shield").foregroundStyle(.secondary)
-                Text("Sin temporales en claro").font(.caption).foregroundStyle(.secondary)
+                Text("Solo en memoria hasta guardar").font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button("Cancelar") { dismiss() }.keyboardShortcut(.cancelAction).disabled(model.busy)
-                Button(model.busy ? "Guardando…" : "Guardar cifrado", action: save)
+                Button("Cancelar") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Aplicar", action: save)
                     .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(model.busy)
             }
         }.padding(28).frame(width: 550)
-        .interactiveDismissDisabled(model.busy)
         .onAppear {
             if let entry = draft.entry {
                 name = entry.name
@@ -74,7 +72,7 @@ struct SecretEditor: View {
         validation = nil
         let path = draft.entry?.path ?? [.key(name)]
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { validation = "Escribí un nombre para la clave."; return }
-        if draft.entry == nil && model.document?.root[path] != nil { validation = "La clave ya existe. Editala desde la lista."; return }
+        if draft.entry == nil && model.workingRoot?[path] != nil { validation = "La clave ya existe. Editala desde la lista."; return }
         let parsed: JSONValue
         if jsonMode && !isENV {
             guard let decoded = try? JSONDecoder().decode(JSONValue.self, from: Data(value.utf8)) else {
@@ -82,6 +80,6 @@ struct SecretEditor: View {
             }
             parsed = decoded
         } else { parsed = .string(value) }
-        model.save(path: path, value: parsed)
+        model.stage(path: path, value: parsed)
     }
 }

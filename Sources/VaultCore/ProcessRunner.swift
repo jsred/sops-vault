@@ -3,16 +3,22 @@ import Foundation
 public struct ProcessResult: Sendable {
     public let output: Data
     public let status: Int32
+    /// Only filled when the caller opts in. Never opt in for SOPS: parsers may echo a secret in an error.
+    public var errorOutput: Data = Data()
+    public var combinedText: String {
+        String(decoding: output, as: UTF8.self) + "\n" + String(decoding: errorOutput, as: UTF8.self)
+    }
 }
 
-/// Pipes only. stderr is drained but never exposed: parsers may echo a secret in an error.
+/// Pipes only. stderr is drained but not exposed unless `captureErrors` is set (git only, never SOPS).
 public enum ProcessRunner {
     /// Runs are short; serializing them process-wide keeps one child from inheriting another's pipes.
     private static let launchLock = NSLock()
 
     public static func run(executable: URL, arguments: [String], input: Data = Data(),
                            environment: [String: String], directory: URL? = nil,
-                           timeout: TimeInterval = 30) throws -> ProcessResult {
+                           timeout: TimeInterval = 30, captureErrors: Bool = false,
+                           tool: String = "SOPS") throws -> ProcessResult {
         launchLock.lock()
         defer { launchLock.unlock() }
         let process = Process()
@@ -32,7 +38,8 @@ public enum ProcessRunner {
         let errors = PipeDrain(stderr.fileHandleForReading)
         defer { output.finish(); errors.finish() }
         do { try process.run() } catch {
-            throw VaultError.message("No se pudo ejecutar SOPS. Revisá la ruta del binario en Ajustes.")
+            throw VaultError.message(tool == "SOPS" ? "No se pudo ejecutar SOPS. Revisá la ruta del binario en Ajustes."
+                                                    : "No se pudo ejecutar \(tool).")
         }
         let writer = DispatchGroup()
         writer.enter()
@@ -49,12 +56,15 @@ public enum ProcessRunner {
                 process.waitUntilExit()
             }
             _ = writer.wait(timeout: .now() + 1)
-            throw VaultError.message("SOPS tardó demasiado. Revisá la clave age y volvé a intentar.")
+            throw VaultError.message(tool == "SOPS" ? "SOPS tardó demasiado. Revisá la clave age y volvé a intentar."
+                                                    : "\(tool) tardó demasiado. Revisá la conexión y volvé a intentar.")
         }
         // The child has exited, so everything it wrote is already in the kernel buffer.
         _ = writer.wait(timeout: .now() + 1)
         let data = output.finish()
-        return ProcessResult(output: data, status: process.terminationStatus)
+        var result = ProcessResult(output: data, status: process.terminationStatus)
+        if captureErrors { result.errorOutput = errors.finish() }
+        return result
     }
 }
 

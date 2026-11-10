@@ -16,10 +16,17 @@ import VaultCore
     @Published var error: String?
     @Published var notice: String?
     @Published var editor: EditorDraft?
-    @Published var pendingDelete: SecretEntry?
+    @Published var status: SyncStatus?
+    /// Unsaved edits per file id, in the order they were made. Plaintext stays in memory only.
+    @Published var pendingByFile: [String: [SecretChange]] = [:]
+    /// Unpushed edits found in the working copy, offered for incorporation.
+    @Published var localChanges: [SecretChange] = []
+    @Published var conflicts: [SecretChange] = []
+    @Published var offerOfflineSave = false
+    @Published var saving = false
     let preferences: Preferences
     private let bookmarks = BookmarkStore()
-    private let service = SOPSService()
+    private let sync = SyncService()
     private var access: [URL] = []
     private var generation = UUID()
     private var scanGeneration = UUID()
@@ -29,8 +36,26 @@ import VaultCore
     private var workspaceObservers: [NSObjectProtocol] = []
     private var authContext: LAContext?
     var selectedFile: VaultFile? { files.first { $0.id == selection } }
-    var filteredEntries: [SecretEntry] {
-        (document?.entries ?? []).filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) }
+    var pending: [SecretChange] { selection.flatMap { pendingByFile[$0] } ?? [] }
+    var unsavedCount: Int { pendingByFile.values.reduce(0) { $0 + $1.count } }
+    /// The loaded document with the pending edits applied.
+    var workingRoot: JSONValue? {
+        guard let document else { return nil }
+        return (try? Merge.applying(pending, to: document.root)) ?? document.root
+    }
+    var rows: [SecretRowModel] {
+        guard let document, let workingRoot else { return [] }
+        let working = VaultDocument(root: workingRoot, ciphertext: Data()).entries.map { entry -> SecretRowModel in
+            let base = document.root[entry.path]
+            return SecretRowModel(entry: entry, state: base == nil ? .added : (base == entry.value ? .unchanged : .modified))
+        }
+        let deleted = document.entries.filter { workingRoot[$0.path] == nil }.map { SecretRowModel(entry: $0, state: .deleted) }
+        return (working + deleted)
+            .filter { search.isEmpty || $0.entry.name.localizedCaseInsensitiveContains(search) }
+            .sorted { $0.entry.name.localizedStandardCompare($1.entry.name) == .orderedAscending }
+    }
+    var canSave: Bool {
+        !locked && !busy && document != nil && (!pending.isEmpty || status?.localCopy == .newFile)
     }
     var projects: [URL] { Array(Set(files.map(\.projectURL))).sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending } }
 
@@ -53,6 +78,11 @@ import VaultCore
                 Task { @MainActor in self?.lock() }
             })
         }
+        #if DEBUG
+        if let path = ProcessInfo.processInfo.environment["SOPS_VAULT_DEBUG_ADD"] {
+            notice = nil; add([URL(fileURLWithPath: path, isDirectory: true)])
+        }
+        #endif
         rescan()
     }
 
@@ -66,8 +96,14 @@ import VaultCore
     }
     func lock() {
         generation = UUID()
-        document = nil; revealed = []; search = ""; editor = nil; pendingDelete = nil
-        error = nil; busy = false
+        let discarded = unsavedCount
+        document = nil; revealed = []; search = ""; editor = nil; status = nil
+        pendingByFile = [:]; localChanges = []; conflicts = []; offerOfflineSave = false
+        error = nil; busy = false; saving = false
+        if discarded > 0 {
+            notice = discarded == 1 ? "Se descartó 1 cambio sin guardar al bloquear la bóveda."
+                                    : "Se descartaron \(discarded) cambios sin guardar al bloquear la bóveda."
+        }
         Clipboard.shared.clear()
         locked = true
         authContext?.invalidate(); authContext = nil; authenticating = false
@@ -108,7 +144,7 @@ import VaultCore
         let remaining = roots.filter { $0 != url }
         do {
             try bookmarks.save(remaining)
-            generation = UUID(); document = nil; revealed = []; editor = nil; pendingDelete = nil
+            generation = UUID(); document = nil; revealed = []; editor = nil; status = nil
             roots = remaining
             access.filter { $0 == url }.forEach { $0.stopAccessingSecurityScopedResource() }
             access.removeAll { $0 == url }
@@ -123,44 +159,129 @@ import VaultCore
             guard scanGeneration == token else { return }
             files = result.files; scanning = false
             if !result.warnings.isEmpty { notice = result.warnings.joined(separator: " ") }
+            #if DEBUG
+            debugScript()
+            #endif
             if let selection, !files.contains(where: { $0.id == selection }) {
-                self.selection = nil; generation = UUID(); document = nil; revealed = []
+                self.selection = nil; generation = UUID(); document = nil; revealed = []; status = nil
             }
+            let ids = Set(files.map(\.id))
+            pendingByFile = pendingByFile.filter { ids.contains($0.key) }
         }
     }
     func loadSelection() {
         generation = UUID(); let token = generation
-        document = nil; revealed = []; editor = nil; pendingDelete = nil; error = nil; search = ""
-        busy = false
+        document = nil; status = nil; revealed = []; editor = nil; error = nil; search = ""
+        localChanges = []; conflicts = []; offerOfflineSave = false
+        busy = false; saving = false
         guard !locked, let file = selectedFile else { return }
         busy = true
         let configuration = preferences.configuration
         Task {
             do {
-                let loaded = try await service.load(url: file.url, configuration: configuration)
+                let loaded = try await sync.load(file.url, configuration: configuration)
                 guard generation == token, !locked else { return }
-                document = loaded; busy = false
+                show(loaded, for: file)
+                busy = false
             } catch {
+                #if DEBUG
+                FileHandle.standardError.write(Data("load failed: \(error)\n".utf8))
+                #endif
                 guard generation == token, !locked else { return }
                 self.error = safeMessage(error); busy = false
             }
         }
     }
-    func save(path: [PathPart], value: JSONValue?) {
-        guard !locked, !busy, let file = selectedFile, let document else { return }
-        busy = true; revealed = []; let token = generation
-        let config = preferences.configuration
+    private func show(_ loaded: LoadedFile, for file: VaultFile) {
+        document = loaded.document; status = loaded.status
+        localChanges = loaded.localChanges
+        if loaded.status.localCopy == .savedOffline, !loaded.localChanges.isEmpty, (pendingByFile[file.id] ?? []).isEmpty {
+            pendingByFile[file.id] = loaded.localChanges; localChanges = []
+            notice = "Hay cambios guardados sin conexión en esta Mac. Tocá «Guardar cambios» para subirlos."
+        }
+    }
+
+    /// Records an edit without writing anything. `value` nil deletes the key.
+    func stage(path: [PathPart], value: JSONValue?) {
+        guard !locked, let file = selectedFile, let document else { return }
+        var list = pendingByFile[file.id] ?? []
+        if let index = list.firstIndex(where: { $0.path == path }) {
+            let original = list[index].original
+            if original == value { list.remove(at: index) }
+            else { list[index] = SecretChange(path: path, original: original, value: value) }
+        } else {
+            let original = document.root[path]
+            guard original != value else { return }
+            list.append(SecretChange(path: path, original: original, value: value))
+        }
+        pendingByFile[file.id] = list.isEmpty ? nil : list
+        editor = nil
+    }
+    func undo(_ row: SecretRowModel) {
+        guard let file = selectedFile else { return }
+        let list = (pendingByFile[file.id] ?? []).filter { !$0.path.isPrefix(of: row.entry.path) && !row.entry.path.isPrefix(of: $0.path) }
+        pendingByFile[file.id] = list.isEmpty ? nil : list
+    }
+    func discardChanges() {
+        guard let file = selectedFile else { return }
+        pendingByFile[file.id] = nil; revealed = []
+    }
+    func incorporateLocalChanges() {
+        guard let file = selectedFile, !localChanges.isEmpty else { return }
+        var list = pendingByFile[file.id] ?? []
+        for change in localChanges where !list.contains(where: { $0.path == change.path }) { list.append(change) }
+        pendingByFile[file.id] = list; localChanges = []
+        notice = "Se agregaron los cambios de tu copia local. Tocá «Guardar cambios» para subirlos."
+    }
+    func setAlwaysPullRequest(_ enabled: Bool) {
+        guard let file = selectedFile else { return }
+        status?.alwaysPullRequest = enabled
+        Task { await sync.setAlwaysPullRequest(for: file.url, enabled) }
+    }
+
+    func saveChanges(resolution: ConflictResolution? = nil) {
+        guard canSave, let file = selectedFile, let document else { return }
+        busy = true; saving = true; conflicts = []; revealed = []
+        let token = generation, changes = pending, configuration = preferences.configuration
         Task {
             do {
-                let updated = try await service.mutate(url: file.url, expectedCiphertext: document.ciphertext,
-                    path: path, value: value, configuration: config)
+                let outcome = try await sync.save(file.url, changes: changes, displayed: document,
+                                                  resolution: resolution, configuration: configuration)
+                switch outcome {
+                case .saved(let loaded, let message):
+                    if pendingByFile[file.id] == changes { pendingByFile[file.id] = nil }
+                    guard generation == token, !locked else { return }
+                    show(loaded, for: file); notice = message
+                case .conflicts(let list):
+                    guard generation == token, !locked else { return }
+                    conflicts = list
+                }
+                busy = false; saving = false
+            } catch SyncError.offline {
                 guard generation == token, !locked else { return }
-                self.document = updated; busy = false; editor = nil; pendingDelete = nil
-                notice = "Cambio guardado y verificado con SOPS."
+                busy = false; saving = false; offerOfflineSave = true
             } catch {
                 guard generation == token, !locked else { return }
-                busy = false; self.error = safeMessage(error)
+                busy = false; saving = false; self.error = safeMessage(error)
             }
+        }
+    }
+    func saveOffline() {
+        guard !locked, !busy, let file = selectedFile, let document, !pending.isEmpty else { return }
+        busy = true; saving = true; offerOfflineSave = false
+        let token = generation, changes = pending, configuration = preferences.configuration
+        Task {
+            do {
+                let loaded = try await sync.saveOffline(file.url, changes: changes, displayed: document, configuration: configuration)
+                if pendingByFile[file.id] == changes { pendingByFile[file.id] = nil }
+                guard generation == token, !locked else { return }
+                self.document = loaded.document; self.status = loaded.status
+                notice = "Guardado cifrado solo en esta Mac. Cuando vuelva la conexión, abrí el archivo y tocá «Guardar cambios» para subirlo."
+            } catch {
+                guard generation == token, !locked else { return }
+                self.error = safeMessage(error)
+            }
+            busy = false; saving = false
         }
     }
     func copy(_ entry: SecretEntry) {
@@ -176,9 +297,36 @@ import VaultCore
         if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
         workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
     }
+    #if DEBUG
+    /// Debug builds only: drives the UI for screenshots without synthetic input.
+    /// SOPS_VAULT_DEBUG_ADD=<folder> SOPS_VAULT_DEBUG_SELECT=<file> SOPS_VAULT_DEBUG_STAGE=KEY=value[;KEY2=] SOPS_VAULT_DEBUG_SAVE=<seconds>
+    private func debugScript() {
+        let env = ProcessInfo.processInfo.environment
+        guard selection == nil, let path = env["SOPS_VAULT_DEBUG_SELECT"], let file = files.first(where: { $0.url.path == Discovery.canonical(URL(fileURLWithPath: path)).path }) else { return }
+        selection = file.id
+        Task {
+            try? await Task.sleep(for: .seconds(3))
+            for item in (env["SOPS_VAULT_DEBUG_STAGE"] ?? "").split(separator: ";") {
+                let parts = item.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                guard parts.count == 2 else { continue }
+                stage(path: [.key(String(parts[0]))], value: parts[1].isEmpty ? nil : .string(String(parts[1])))
+            }
+            if let delay = env["SOPS_VAULT_DEBUG_SAVE"].flatMap(Double.init) {
+                try? await Task.sleep(for: .seconds(delay)); saveChanges()
+            }
+        }
+    }
+    #endif
     private func safeMessage(_ error: Error) -> String {
         (error as? VaultError)?.errorDescription ?? "No se pudo acceder al archivo. Revisá que siga disponible y que tengas permisos."
     }
+}
+
+struct SecretRowModel: Identifiable {
+    enum State { case unchanged, modified, added, deleted }
+    let entry: SecretEntry
+    let state: State
+    var id: String { entry.id }
 }
 
 struct EditorDraft: Identifiable {

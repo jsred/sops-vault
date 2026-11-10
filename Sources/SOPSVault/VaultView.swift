@@ -7,6 +7,7 @@ private let vaultAccent = Color(red: 0.21, green: 0.62, blue: 0.53)
 struct VaultView: View {
     @ObservedObject var model: VaultModel
     @ViewState<Bool> private var dropTarget = false
+    private var saveTitle: String { model.pending.isEmpty ? "Guardar cambios" : "Guardar cambios (\(model.pending.count))" }
     var body: some View {
         NavigationSplitView {
             sidebar
@@ -44,7 +45,7 @@ struct VaultView: View {
                     }
                     .padding(12).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                     .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.quaternary))
-                    .padding(20).frame(maxWidth: 650)
+                    .padding(.horizontal, 20).padding(.bottom, model.selectedFile == nil ? 20 : 58).frame(maxWidth: 650)
                 }
             }
         }
@@ -58,6 +59,19 @@ struct VaultView: View {
                 SettingsLink { Label("Ajustes", systemImage: "gearshape") }.help("Ajustes")
                 Button(action: model.lock) { Label("Bloquear", systemImage: "lock") }
                     .disabled(model.locked).help("Bloquear bóveda (⇧⌘L)")
+            }
+            ToolbarItemGroup {
+                if !model.pending.isEmpty {
+                    Button("Descartar", action: model.discardChanges).disabled(model.busy)
+                        .help("Descartar los cambios sin guardar de este archivo")
+                }
+                Button(action: { model.saveChanges() }) {
+                    Label(model.saving ? "Guardando…" : saveTitle, systemImage: "arrow.up.circle.fill")
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!model.canSave)
+                .help(model.status?.isGit == true ? "Cifrar y subir los cambios a origin (⌘S)" : "Cifrar y guardar los cambios (⌘S)")
             }
         }
         .overlay {
@@ -80,13 +94,20 @@ struct VaultView: View {
         .alert("No se pudo completar la acción", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("Aceptar") { model.error = nil }
         } message: { Text(model.error ?? "") }
-        .confirmationDialog("¿Eliminar esta clave del archivo cifrado?", isPresented: Binding(
-            get: { model.pendingDelete != nil }, set: { if !$0 { model.pendingDelete = nil } }), titleVisibility: .visible) {
-                if let entry = model.pendingDelete {
-                    Button("Eliminar clave", role: .destructive) { model.save(path: entry.path, value: nil) }
-                }
-                Button("Cancelar", role: .cancel) { model.pendingDelete = nil }
-            } message: { Text(model.pendingDelete?.name ?? "") }
+        .confirmationDialog("Otro cambio llegó a origin", isPresented: Binding(
+            get: { !model.conflicts.isEmpty }, set: { if !$0 { model.conflicts = [] } }), titleVisibility: .visible) {
+                Button("Usar mis valores") { model.saveChanges(resolution: .keepMine) }
+                Button("Usar los de origin") { model.saveChanges(resolution: .keepTheirs) }
+                Button("Cancelar", role: .cancel) { model.conflicts = [] }
+            } message: {
+                Text("Estas claves cambiaron en origin desde que empezaste a editar: \(model.conflicts.map(\.name).joined(separator: ", ")). El resto de tus cambios se aplica sobre la versión nueva.")
+            }
+        .alert("No hay conexión con origin", isPresented: $model.offerOfflineSave) {
+            Button("Guardar solo en esta Mac") { model.saveOffline() }
+            Button("Cancelar", role: .cancel) {}
+        } message: {
+            Text("Tus cambios siguen pendientes. Podés guardarlos cifrados solo en esta Mac y subirlos cuando vuelva la conexión.")
+        }
     }
     private var sidebar: some View {
         VStack(spacing: 0) {
@@ -113,7 +134,13 @@ struct VaultView: View {
                             HStack(spacing: 9) {
                                 Image(systemName: "doc.text").foregroundStyle(.secondary)
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text(file.url.lastPathComponent).lineLimit(1)
+                                    HStack(spacing: 5) {
+                                        Text(file.url.lastPathComponent).lineLimit(1)
+                                        if !(model.pendingByFile[file.id] ?? []).isEmpty {
+                                            Circle().fill(.orange).frame(width: 7, height: 7)
+                                                .help("Cambios sin guardar").accessibilityLabel("Cambios sin guardar")
+                                        }
+                                    }
                                     if file.relativePath != file.url.lastPathComponent {
                                         Text(file.relativePath).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                                     }
@@ -175,7 +202,12 @@ struct FileDetail: View {
                 HStack {
                     Text("\(model.document?.entries.count ?? 0) claves").font(.callout.weight(.medium))
                     Text("·").foregroundStyle(.tertiary)
-                    Text("Valores solo en memoria").font(.callout).foregroundStyle(.secondary)
+                    if model.pending.isEmpty {
+                        Text("Valores solo en memoria").font(.callout).foregroundStyle(.secondary)
+                    } else {
+                        Text(model.pending.count == 1 ? "1 cambio sin guardar" : "\(model.pending.count) cambios sin guardar")
+                            .font(.callout.weight(.medium)).foregroundStyle(.orange)
+                    }
                     Spacer()
                     Button(action: model.loadSelection) { Image(systemName: "arrow.clockwise") }
                         .help("Recargar archivo (⌘R)").accessibilityLabel("Recargar archivo").disabled(model.busy)
@@ -204,7 +236,7 @@ struct FileDetail: View {
                     SettingsLink { Text("Abrir Ajustes") }
                     Button("Volver a intentar", action: model.loadSelection)
                 }
-            } else if model.filteredEntries.isEmpty {
+            } else if model.rows.isEmpty {
                 ContentUnavailableView(model.search.isEmpty ? "Este archivo no tiene claves" : "No se encontraron claves",
                     systemImage: model.search.isEmpty ? "key" : "magnifyingglass", description: Text(model.search.isEmpty
                         ? "Agregá una clave para empezar." : "Probá con otro nombre. La búsqueda no examina valores."))
@@ -215,40 +247,41 @@ struct FileDetail: View {
                     .padding(.horizontal, 28).padding(.vertical, 13).background(.quaternary.opacity(0.16))
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(model.filteredEntries) { entry in
-                            SecretRow(model: model, entry: entry)
+                        ForEach(model.rows) { row in
+                            SecretRow(model: model, row: row)
                             Divider().padding(.leading, 26)
                         }
                     }
                 }
             }
             Divider()
-            HStack(spacing: 7) {
-                if model.busy { ProgressView().controlSize(.small) }
-                else { Image(systemName: "externaldrive.badge.checkmark").foregroundStyle(vaultAccent) }
-                Text(model.busy ? "Guardando y verificando…" : "Los cambios se guardan cifrados en el archivo original.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Spacer()
-            }.padding(.horizontal, 24).padding(.vertical, 13)
+            SyncBar(model: model)
         }.navigationTitle(file.url.lastPathComponent)
     }
 }
 
 struct SecretRow: View {
     @ObservedObject var model: VaultModel
-    let entry: SecretEntry
+    let row: SecretRowModel
+    private var entry: SecretEntry { row.entry }
     private var visible: Bool { model.revealed.contains(entry.id) }
+    private var deleted: Bool { row.state == .deleted }
     var body: some View {
         HStack(spacing: 14) {
             Image(systemName: "key.horizontal").font(.system(size: 15)).foregroundStyle(.secondary).frame(width: 20)
             VStack(alignment: .leading, spacing: 5) {
                 Text(entry.name).font(.system(.body, design: .monospaced).weight(.medium)).lineLimit(2)
-                Text(entry.value.typeName).font(.caption).foregroundStyle(.secondary)
+                    .strikethrough(deleted).foregroundStyle(deleted ? .secondary : .primary)
+                HStack(spacing: 6) {
+                    Text(entry.value.typeName).font(.caption).foregroundStyle(.secondary)
+                    if let badge { Text(badge.0).font(.caption2.weight(.semibold)).foregroundStyle(badge.1)
+                        .padding(.horizontal, 6).padding(.vertical, 1).background(badge.1.opacity(0.13), in: Capsule()) }
+                }
             }.frame(minWidth: 130, maxWidth: .infinity, alignment: .leading)
             Group {
                 if visible {
                     Text(entry.value.display).font(.system(.callout, design: .monospaced)).lineLimit(3)
-                        .textSelection(.enabled)
+                        .textSelection(.enabled).strikethrough(deleted)
                 } else {
                     Text("••••••••").font(.system(size: 17, weight: .medium, design: .monospaced))
                         .tracking(2).foregroundStyle(.tertiary).accessibilityLabel("Valor oculto")
@@ -261,12 +294,86 @@ struct SecretRow: View {
                     .help(visible ? "Ocultar valor" : "Mostrar valor").accessibilityLabel(visible ? "Ocultar valor" : "Mostrar valor")
                 Button { model.copy(entry) } label: { Image(systemName: "doc.on.doc") }
                     .help("Copiar por 30 segundos").accessibilityLabel("Copiar valor por 30 segundos")
+                // Always laid out so the value column stays aligned across rows.
+                Button { model.undo(row) } label: { Image(systemName: "arrow.uturn.backward") }
+                    .help("Deshacer este cambio").accessibilityLabel("Deshacer este cambio")
+                    .opacity(row.state == .unchanged ? 0 : 1).disabled(row.state == .unchanged)
+                    .accessibilityHidden(row.state == .unchanged)
                 Menu {
-                    Button("Editar…", systemImage: "pencil") { model.editor = EditorDraft(entry: entry) }
-                    Button("Eliminar clave…", systemImage: "trash", role: .destructive) { model.pendingDelete = entry }
+                    Button("Editar…", systemImage: "pencil") { model.editor = EditorDraft(entry: entry) }.disabled(deleted)
+                    Button("Eliminar clave", systemImage: "trash", role: .destructive) { model.stage(path: entry.path, value: nil) }
+                        .disabled(deleted)
                 } label: { Image(systemName: "ellipsis") }
                     .menuStyle(.borderlessButton).fixedSize().help("Acciones de la clave").accessibilityLabel("Acciones de la clave")
             }.buttonStyle(.borderless).foregroundStyle(.secondary).disabled(model.busy)
         }.padding(.horizontal, 26).padding(.vertical, 17)
+        .background(row.state == .unchanged ? Color.clear : Color.orange.opacity(0.05))
+    }
+    private var badge: (String, Color)? {
+        switch row.state {
+        case .unchanged: return nil
+        case .modified: return ("Modificada", .orange)
+        case .added: return ("Nueva", .green)
+        case .deleted: return ("Se eliminará", .red)
+        }
+    }
+}
+
+/// Where the file is saved and how it relates to origin and the local copy.
+struct SyncBar: View {
+    @ObservedObject var model: VaultModel
+    var body: some View {
+        HStack(spacing: 8) {
+            if model.busy { ProgressView().controlSize(.small) }
+            else { Image(systemName: symbol).foregroundStyle(tint) }
+            Text(text).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            Spacer()
+            if let status = model.status {
+                if let url = status.pullRequest?.url { Link("Ver PR", destination: url).font(.caption) }
+                if !model.localChanges.isEmpty && status.localCopy == .modified {
+                    Button("Incorporar cambios locales", action: model.incorporateLocalChanges).font(.caption).disabled(model.busy)
+                }
+                if status.isGit {
+                    Menu {
+                        Toggle("Abrir siempre un PR en este repositorio", isOn: Binding(
+                            get: { model.status?.alwaysPullRequest ?? false }, set: { model.setAlwaysPullRequest($0) }))
+                    } label: { Image(systemName: "arrow.triangle.branch") }
+                        .menuStyle(.borderlessButton).fixedSize().help("Cómo se suben los cambios")
+                }
+            }
+        }.padding(.horizontal, 24).padding(.vertical, 12)
+    }
+    private var text: String {
+        if model.saving { return model.status?.isGit == true ? "Cifrando, verificando y subiendo a origin…" : "Cifrando y verificando…" }
+        if model.busy { return "Descifrando con SOPS…" }
+        guard let status = model.status else { return "Los cambios se guardan cifrados con SOPS." }
+        switch status.storage {
+        case .local(let reason):
+            return "Solo en esta Mac (\(reason)). «Guardar cambios» escribe el archivo cifrado."
+        case .git(let branch):
+            var parts: [String] = []
+            if status.pullRequest != nil { parts.append("Mostrando el PR abierto; los cambios se suman a ese PR.") }
+            else { parts.append(status.alwaysPullRequest ? "Se guarda con un PR hacia origin/\(branch)." : "Sincronizado con origin/\(branch).") }
+            if status.fetchFailed { parts.append("Sin conexión: es la última versión conocida.") }
+            switch status.localCopy {
+            case .current: break
+            case .behind: parts.append("Tu copia local está desactualizada (git pull).")
+            case .modified: parts.append("Tu copia local tiene cambios que no están en origin.")
+            case .savedOffline: parts.append("Hay cambios guardados sin conexión para subir.")
+            case .newFile: parts.append("El archivo todavía no está en origin: «Guardar cambios» lo sube.")
+            }
+            return parts.joined(separator: " ")
+        }
+    }
+    private var symbol: String {
+        guard let status = model.status else { return "lock.shield" }
+        if !status.isGit { return "internaldrive" }
+        if status.fetchFailed { return "wifi.slash" }
+        if status.pullRequest != nil { return "arrow.triangle.pull" }
+        return status.localCopy == .current || status.localCopy == .behind ? "checkmark.icloud" : "exclamationmark.icloud"
+    }
+    private var tint: Color {
+        guard let status = model.status, status.isGit else { return .secondary }
+        return status.fetchFailed || status.localCopy == .modified || status.localCopy == .savedOffline ? .orange : vaultAccent
     }
 }

@@ -29,3 +29,23 @@ import Testing
         #expect(throws: (any Error).self) { try SOPSConfiguration(ageKeyPath: "/nonexistent/test-key").environment() }
     }
 }
+
+@Suite struct MergeTests {
+    @Test func conflictsOnlyWhenRemoteMovedToADifferentValue() {
+        let remote: JSONValue = .object(["A": .string("theirs"), "B": .string("same"), "C": .string("mine")])
+        let changes = [
+            SecretChange(path: [.key("A")], original: .string("old"), value: .string("mine")),
+            SecretChange(path: [.key("B")], original: .string("same"), value: .string("new")),
+            SecretChange(path: [.key("C")], original: .string("old"), value: .string("mine")),
+            SecretChange(path: [.key("D")], original: .string("old"), value: nil),
+        ]
+        #expect(Merge.conflicts(changes, remote: remote).map(\.name) == ["A"])
+    }
+    @Test func diffProducesReplayableTopLevelChanges() throws {
+        let base: JSONValue = .object(["A": .string("1"), "B": .object(["x": .bool(true)]), "C": .string("gone")])
+        let local: JSONValue = .object(["A": .string("1"), "B": .object(["x": .bool(false)]), "D": .string("new")])
+        let diff = Merge.diff(from: base, to: local)
+        #expect(diff.map(\.name) == ["B", "C", "D"])
+        #expect(try Merge.applying(diff, to: base) == local)
+    }
+}

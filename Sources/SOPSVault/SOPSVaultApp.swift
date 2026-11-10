@@ -11,6 +11,7 @@ import AppKit
         let model = VaultModel(preferences: preferences)
         _model = StateObject(wrappedValue: model)
         OpenRequests.shared.handler = { [weak model] urls in model?.add(urls) }
+        UnsavedChanges.count = { [weak model] in model?.unsavedCount ?? 0 }
     }
     var body: some Scene {
         Window("SOPS Vault", id: "vault") {
@@ -30,6 +31,8 @@ import AppKit
             }
             CommandMenu("Bóveda") {
                 Button("Bloquear bóveda", action: model.lock).keyboardShortcut("l", modifiers: [.command, .shift])
+                Button("Guardar cambios") { model.saveChanges() }.keyboardShortcut("s")
+                    .disabled(!model.canSave)
                 Button("Recargar archivo", action: model.loadSelection).keyboardShortcut("r")
                     .disabled(model.locked || model.busy || model.selectedFile == nil)
             }
@@ -54,7 +57,23 @@ import AppKit
     }
 }
 
+@MainActor enum UnsavedChanges {
+    static var count: () -> Int = { 0 }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        MainActor.assumeIsolated {
+            let count = UnsavedChanges.count()
+            guard count > 0 else { return .terminateNow }
+            let alert = NSAlert()
+            alert.messageText = count == 1 ? "Tenés 1 cambio sin guardar" : "Tenés \(count) cambios sin guardar"
+            alert.informativeText = "Si salís ahora, esos cambios se pierden. Los valores sin guardar nunca se escriben en el disco."
+            alert.addButton(withTitle: "Cancelar")
+            alert.addButton(withTitle: "Salir sin guardar")
+            return alert.runModal() == .alertSecondButtonReturn ? .terminateNow : .terminateCancel
+        }
+    }
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)

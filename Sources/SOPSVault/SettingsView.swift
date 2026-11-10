@@ -32,6 +32,12 @@ struct SettingsView: View {
                     Text("Cambiar estos ajustes bloquea la bóveda. El bloqueo protege esta interfaz; la identidad age sigue siendo un archivo de tu usuario de macOS.")
                         .font(.caption).foregroundStyle(.secondary)
                 } header: { Text("Privacidad") }
+                Section {
+                    Label("En repositorios git con origin, «Guardar cambios» sube solo ese archivo cifrado a la rama principal de origin.", systemImage: "arrow.up.circle")
+                    Label("Tu checkout local no se modifica: actualizalo con git pull. Si la rama está protegida, se abre un PR (con gh si está instalado).", systemImage: "arrow.triangle.branch")
+                    Text("Los archivos fuera de git, sin origin o ignorados por git se guardan solo en esta Mac.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } header: { Text("Sincronización") }
             }.formStyle(.grouped).tabItem { Label("General", systemImage: "gearshape") }.tag(0)
 
             VStack(alignment: .leading, spacing: 16) {
@@ -54,7 +60,7 @@ struct SettingsView: View {
                 }
                 Button { ReferencePicker.show { model.add($0) } } label: { Label("Agregar referencia…", systemImage: "plus") }
             }.padding(24).tabItem { Label("Referencias", systemImage: "folder") }.tag(1)
-        }.frame(width: 650, height: 530)
+        }.frame(width: 650, height: 640)
     }
     private func chooseFile(completion: @escaping (URL) -> Void) {
         let panel = NSOpenPanel()
