@@ -27,13 +27,13 @@ import AppKit
         .windowToolbarStyle(.unified)
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("Agregar archivos o carpetas…", action: chooseReferences).keyboardShortcut("o")
+                Button("Add Files or Folders…", action: chooseReferences).keyboardShortcut("o")
             }
-            CommandMenu("Bóveda") {
-                Button("Bloquear bóveda", action: model.lock).keyboardShortcut("l", modifiers: [.command, .shift])
-                Button("Guardar cambios") { model.saveChanges() }.keyboardShortcut("s")
+            CommandMenu("Vault") {
+                Button("Lock Vault", action: model.lock).keyboardShortcut("l", modifiers: [.command, .shift])
+                Button("Save Changes") { model.saveChanges() }.keyboardShortcut("s")
                     .disabled(!model.canSave)
-                Button("Recargar archivo", action: model.loadSelection).keyboardShortcut("r")
+                Button("Reload File", action: model.loadSelection).keyboardShortcut("r")
                     .disabled(model.locked || model.busy || model.selectedFile == nil)
             }
         }
@@ -67,10 +67,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let count = UnsavedChanges.count()
             guard count > 0 else { return .terminateNow }
             let alert = NSAlert()
-            alert.messageText = count == 1 ? "Tenés 1 cambio sin guardar" : "Tenés \(count) cambios sin guardar"
-            alert.informativeText = "Si salís ahora, esos cambios se pierden. Los valores sin guardar nunca se escriben en el disco."
-            alert.addButton(withTitle: "Cancelar")
-            alert.addButton(withTitle: "Salir sin guardar")
+            alert.messageText = count == 1 ? String(localized: "You have 1 unsaved change") : String(localized: "You have \(count) unsaved changes")
+            alert.informativeText = String(localized: "If you quit now, those changes are lost. Unsaved values are never written to disk.")
+            alert.addButton(withTitle: String(localized: "Cancel"))
+            alert.addButton(withTitle: String(localized: "Quit Without Saving"))
             return alert.runModal() == .alertSecondButtonReturn ? .terminateNow : .terminateCancel
         }
     }
@@ -90,9 +90,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 enum ReferencePicker {
     @MainActor static func show(completion: @escaping ([URL]) -> Void) {
         let panel = NSOpenPanel()
-        panel.title = "Agregar referencias a SOPS Vault"
-        panel.prompt = "Agregar"
-        panel.message = "Elegí un repositorio, una carpeta o archivos cifrados. Los archivos permanecen en su ubicación."
+        panel.title = String(localized: "Add References to SOPS Vault")
+        panel.prompt = String(localized: "Add")
+        panel.message = String(localized: "Choose a repository, a folder or encrypted files. Files stay where they are.")
         panel.canChooseDirectories = true; panel.canChooseFiles = true; panel.allowsMultipleSelection = true
         panel.showsHiddenFiles = true
         panel.begin { response in if response == .OK { completion(panel.urls) } }

@@ -16,7 +16,8 @@ A native macOS app (Swift + SwiftUI, macOS 14+) for viewing and editing secrets 
 - Saving keeps the file in sync with git (see below), so the change is not left only on one Mac.
 - Optional Touch ID / macOS password lock when the app opens, when the Mac sleeps and after
   5 minutes of inactivity.
-- The interface is in Spanish.
+- The interface is available in English and Spanish. It follows the macOS language (including the
+  per-app language in System Settings), or you can pick one in Settings → General → Language.
 
 ## Sync with git
 
@@ -86,11 +87,24 @@ swift test --disable-xctest -Xswiftc -plugin-path \
   -Xswiftc /Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing
 ```
 
+## Translations
+
+Strings live in `Localization/<language>.lproj/Localizable.strings`. The keys are the English source
+strings, so `en.lproj` stays empty. To add a language:
+
+1. Copy `Localization/es.lproj` to `Localization/<code>.lproj` and translate the values. Keep the
+   format arguments (`%@`, `%lld`, or positional `%1$@`) the same as in each key.
+2. Add the code to `CFBundleLocalizations` in `scripts/package.sh` and to `Preferences.languages`.
+
+`swift test` checks that every user-facing literal in the source has a Spanish entry and that the
+translations keep the format arguments of their keys.
+
 ## Project layout
 
 ```
 Sources/VaultCore   SOPS invocation, git sync, merge, discovery, bookmarks, document model (tested)
 Sources/SOPSVault   SwiftUI app
+Localization/       Localizable.strings per language (copied into the app bundle)
 Tests/VaultCoreTests
 scripts/            packaging and icon generation
 ```

@@ -17,7 +17,7 @@ public struct SOPSConfiguration: Sendable {
                 (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map { "\($0)/sops" }
         }
         guard let path = candidates.first(where: { fm.isExecutableFile(atPath: $0) }) else {
-            throw VaultError.message("No se encontró SOPS. Instalalo con «brew install sops age» o elegí su binario en Ajustes.")
+            throw VaultError.localized("SOPS was not found. Install it with “brew install sops age” or choose its binary in Settings.")
         }
         return URL(fileURLWithPath: path)
     }
@@ -26,7 +26,7 @@ public struct SOPSConfiguration: Sendable {
         var isDirectory: ObjCBool = false
         guard !path.isEmpty, FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
               !isDirectory.boolValue, FileManager.default.isReadableFile(atPath: path) else {
-            throw VaultError.message("No se encontró una clave age legible. Elegí el archivo de identidad en Ajustes. Ruta predeterminada: ~/.config/sops/age/keys.txt.")
+            throw VaultError.localized("No readable age key was found. Choose the identity file in Settings. Default path: ~/.config/sops/age/keys.txt.")
         }
         // Deliberately do not inherit SOPS_*, cloud credentials or editor configuration.
         var env = ["PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin", "SOPS_AGE_KEY_FILE": path,
@@ -84,7 +84,7 @@ public actor SOPSService {
         defer { try? FileManager.default.removeItem(at: staging) }
         let staged = staging.appendingPathComponent("secret.\(format == .dotenv ? "env" : format.rawValue)")
         guard FileManager.default.createFile(atPath: staged.path, contents: ciphertext, attributes: [.posixPermissions: 0o600]) else {
-            throw VaultError.message("No se pudo preparar la escritura cifrada. Revisá los permisos de la carpeta.")
+            throw VaultError.localized("The encrypted write could not be prepared. Check the folder's permissions.")
         }
         for change in effective {
             var args = [change.value == nil ? "unset" : "set", "--input-type", format.rawValue, "--output-type", format.rawValue]
@@ -93,14 +93,14 @@ public actor SOPSService {
             let result = try ProcessRunner.run(executable: executable, arguments: args, input: change.value?.data ?? Data(),
                                                environment: environment, directory: directory)
             guard result.status == 0 else {
-                throw VaultError.message("SOPS no pudo aplicar el cambio en «\(change.name)». Revisá la clave, el formato y que SOPS sea 3.11 o posterior. Nada se guardó.")
+                throw VaultError.localized("SOPS could not apply the change to “\(change.name)”. Check the key, the format and that SOPS is 3.11 or later. Nothing was saved.")
             }
         }
         let encrypted = try readCiphertext(staged)
         // Verify MAC, decode and validate the intended result before anything uses it.
         let verified = try decrypt(encrypted, format: format, configuration: configuration)
         guard expectedRoot == verified.root else {
-            throw VaultError.message("La verificación del cambio falló. Nada se guardó.")
+            throw VaultError.localized("Verifying the change failed. Nothing was saved.")
         }
         return verified
     }
@@ -114,13 +114,13 @@ public actor SOPSService {
         defer { try? FileManager.default.removeItem(at: staging) }
         let staged = staging.appendingPathComponent(url.lastPathComponent)
         guard FileManager.default.createFile(atPath: staged.path, contents: ciphertext, attributes: [.posixPermissions: 0o600]) else {
-            throw VaultError.message("No se pudo preparar la escritura cifrada. Revisá los permisos de la carpeta.")
+            throw VaultError.localized("The encrypted write could not be prepared. Check the folder's permissions.")
         }
         if let expected { guard try readCiphertext(url) == expected else { throw conflict } }
         let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
         if let mode = attrs[.posixPermissions] { try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: staged.path) }
         guard rename(staged.path, url.path) == 0 else {
-            throw VaultError.message("No se pudo reemplazar el archivo cifrado. Revisá los permisos. El original sigue intacto.")
+            throw VaultError.localized("The encrypted file could not be replaced. Check the permissions. The original is intact.")
         }
     }
 
@@ -129,20 +129,20 @@ public actor SOPSService {
     private func validate(_ change: SecretChange, format: FileFormat) throws {
         let path = change.path
         guard !path.isEmpty, case .key(let first) = path[0], first != "sops", !first.hasPrefix("sops_") else {
-            throw VaultError.message("La ruta debe empezar con una clave y no puede modificar metadata SOPS.")
+            throw VaultError.localized("The path must start with a key and cannot change SOPS metadata.")
         }
         guard format == .dotenv else { return }
         guard path.count == 1, !first.isEmpty,
               first.range(of: "^[A-Za-z_][A-Za-z0-9_]*$", options: .regularExpression) != nil else {
-            throw VaultError.message("Los archivos ENV necesitan una clave simple, por ejemplo API_TOKEN.")
+            throw VaultError.localized("ENV files need a simple key, for example API_TOKEN.")
         }
         if let value = change.value, case .string = value {} else if change.value != nil {
-            throw VaultError.message("Los valores ENV deben ser texto.")
+            throw VaultError.localized("ENV values must be text.")
         }
     }
 
     private var conflict: VaultError {
-        .message("El archivo cambió fuera de SOPS Vault. Recargalo antes de editar para no sobrescribir esos cambios.")
+        .localized("The file changed outside SOPS Vault. Reload it before editing so those changes are not overwritten.")
     }
     private func decrypt(_ data: Data, format: FileFormat, configuration: SOPSConfiguration) throws -> VaultDocument {
         let executable = try configuration.executable()
@@ -151,24 +151,24 @@ public actor SOPSService {
             arguments: ["decrypt", "--input-type", format.rawValue, "--output-type", "json", "/dev/stdin"],
             input: data, environment: environment)
         guard result.status == 0 else {
-            throw VaultError.message("No se pudo descifrar. La identidad age debe corresponder a un destinatario del archivo y la firma MAC debe ser válida. Revisá Ajustes; el archivo no se modificó.")
+            throw VaultError.localized("Could not decrypt. The age identity must match one of the file's recipients and the MAC must be valid. Check Settings; the file was not changed.")
         }
         do {
             let root = try JSONDecoder().decode(JSONValue.self, from: result.output)
             guard case .object = root else {
-                throw VaultError.message("El documento debe tener claves en la raíz. Los YAML con varios documentos no se admiten.")
+                throw VaultError.localized("The document must have keys at the root. YAML files with several documents are not supported.")
             }
             return VaultDocument(root: root, ciphertext: data)
         } catch let error as VaultError { throw error }
-        catch { throw VaultError.message("No se pudo interpretar el documento. Se admiten ENV, JSON y YAML de un solo documento con claves en la raíz.") }
+        catch { throw VaultError.localized("The document could not be read. ENV, JSON and single-document YAML with keys at the root are supported.") }
     }
     private func readCiphertext(_ url: URL) throws -> Data {
         let info = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
         guard info.isRegularFile == true, info.isSymbolicLink != true else {
-            throw VaultError.message("Elegí un archivo regular. Por seguridad no se editan enlaces simbólicos.")
+            throw VaultError.localized("Choose a regular file. For safety, symbolic links are not edited.")
         }
         guard (info.fileSize ?? 0) <= 8 * 1024 * 1024 else {
-            throw VaultError.message("El archivo supera el límite de 8 MB.")
+            throw VaultError.localized("The file is larger than the 8 MB limit.")
         }
         return try Data(contentsOf: url)
     }

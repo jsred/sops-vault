@@ -65,7 +65,7 @@ import VaultCore
         let restored = bookmarks.restore()
         roots = restored.urls
         access = roots.filter { $0.startAccessingSecurityScopedResource() }
-        if restored.unavailable > 0 { notice = "Hay referencias no disponibles. Volvé a agregarlas desde el Finder." }
+        if restored.unavailable > 0 { notice = String(localized: "Some references are unavailable. Add them again from the Finder.") }
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .scrollWheel, .mouseMoved]) { [weak self] event in
             Task { @MainActor in self?.activity() }; return event
         }
@@ -101,8 +101,8 @@ import VaultCore
         pendingByFile = [:]; localChanges = []; conflicts = []; offerOfflineSave = false
         error = nil; busy = false; saving = false
         if discarded > 0 {
-            notice = discarded == 1 ? "Se descartó 1 cambio sin guardar al bloquear la bóveda."
-                                    : "Se descartaron \(discarded) cambios sin guardar al bloquear la bóveda."
+            notice = discarded == 1 ? String(localized: "1 unsaved change was discarded when the vault locked.")
+                                    : String(localized: "\(discarded) unsaved changes were discarded when the vault locked.")
         }
         Clipboard.shared.clear()
         locked = true
@@ -116,15 +116,15 @@ import VaultCore
         let context = LAContext()
         var failure: NSError?
         guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &failure) else {
-            error = "No se pudo usar la autenticación de macOS. Configurá Touch ID o la contraseña de inicio de sesión."; return
+            error = String(localized: "macOS authentication is not available. Set up Touch ID or a login password."); return
         }
         authenticating = true; authContext = context
-        context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Desbloquear los secretos de SOPS Vault") { [weak self] success, _ in
+        context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: String(localized: "Unlock your SOPS Vault secrets")) { [weak self] success, _ in
             Task { @MainActor in
                 guard let self, self.authContext === context else { return }
                 self.authenticating = false; self.authContext = nil
                 if success { self.locked = false; self.lastActivity = ProcessInfo.processInfo.systemUptime; self.loadSelection() }
-                else { self.error = "No se desbloqueó la bóveda. Podés volver a intentar." }
+                else { self.error = String(localized: "The vault was not unlocked. You can try again.") }
             }
         }
     }
@@ -137,7 +137,7 @@ import VaultCore
             access += newlyAccessed; roots += new; rescan()
         } catch {
             newlyAccessed.forEach { $0.stopAccessingSecurityScopedResource() }
-            self.error = "No se pudo guardar la referencia. Volvé a elegirla en el selector de archivos."
+            self.error = String(localized: "The reference could not be saved. Choose it again in the file picker.")
         }
     }
     func remove(_ url: URL) {
@@ -149,7 +149,7 @@ import VaultCore
             access.filter { $0 == url }.forEach { $0.stopAccessingSecurityScopedResource() }
             access.removeAll { $0 == url }
             rescan()
-        } catch { self.error = "No se pudo quitar la referencia." }
+        } catch { self.error = String(localized: "The reference could not be removed.") }
     }
     func rescan() {
         let token = UUID(); scanGeneration = token; scanning = true
@@ -197,7 +197,7 @@ import VaultCore
         localChanges = loaded.localChanges
         if loaded.status.localCopy == .savedOffline, !loaded.localChanges.isEmpty, (pendingByFile[file.id] ?? []).isEmpty {
             pendingByFile[file.id] = loaded.localChanges; localChanges = []
-            notice = "Hay cambios guardados sin conexión en esta Mac. Tocá «Guardar cambios» para subirlos."
+            notice = String(localized: "There are changes saved offline on this Mac. Click “Save Changes” to push them.")
         }
     }
 
@@ -231,7 +231,7 @@ import VaultCore
         var list = pendingByFile[file.id] ?? []
         for change in localChanges where !list.contains(where: { $0.path == change.path }) { list.append(change) }
         pendingByFile[file.id] = list; localChanges = []
-        notice = "Se agregaron los cambios de tu copia local. Tocá «Guardar cambios» para subirlos."
+        notice = String(localized: "Your local copy's changes were added. Click “Save Changes” to push them.")
     }
     func setAlwaysPullRequest(_ enabled: Bool) {
         guard let file = selectedFile else { return }
@@ -276,7 +276,7 @@ import VaultCore
                 if pendingByFile[file.id] == changes { pendingByFile[file.id] = nil }
                 guard generation == token, !locked else { return }
                 self.document = loaded.document; self.status = loaded.status
-                notice = "Guardado cifrado solo en esta Mac. Cuando vuelva la conexión, abrí el archivo y tocá «Guardar cambios» para subirlo."
+                notice = String(localized: "Saved encrypted on this Mac only. When you are back online, open the file and click “Save Changes” to push it.")
             } catch {
                 guard generation == token, !locked else { return }
                 self.error = safeMessage(error)
@@ -287,7 +287,7 @@ import VaultCore
     func copy(_ entry: SecretEntry) {
         guard !locked else { return }
         Clipboard.shared.copy(entry.value.display)
-        notice = "Copiado. El portapapeles se limpia en 30 segundos."
+        notice = String(localized: "Copied. The clipboard clears in 30 seconds.")
     }
     func configurationChanged() { lock() }
     func shutdown() {
@@ -318,7 +318,7 @@ import VaultCore
     }
     #endif
     private func safeMessage(_ error: Error) -> String {
-        (error as? VaultError)?.errorDescription ?? "No se pudo acceder al archivo. Revisá que siga disponible y que tengas permisos."
+        (error as? VaultError)?.errorDescription ?? String(localized: "The file could not be accessed. Check that it is still available and that you have permission.")
     }
 }
 

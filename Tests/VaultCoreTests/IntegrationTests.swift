@@ -120,7 +120,7 @@ import Testing
             _ = try await service.mutate(url: url, expectedCiphertext: initial.ciphertext,
                 path: [.key("KEY")], value: .string("FAKE_ours"), configuration: config)
             Issue.record("Must reject stale document")
-        } catch { #expect(error.localizedDescription.contains("cambió")) }
+        } catch { #expect(error.localizedDescription.contains("changed outside")) }
         #expect(try Data(contentsOf: url) == externalBytes)
     }
 

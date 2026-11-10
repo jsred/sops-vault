@@ -157,7 +157,7 @@ import Testing
         let first = try await sync.save(file, changes: [change("API_TOKEN", from: "FAKE_one", to: "FAKE_pr")],
                                         displayed: loaded.document, resolution: nil, configuration: config)
         guard case .saved(let saved, let message) = first, let pr = saved.status.pullRequest else { Issue.record("expected PR"); return }
-        #expect(message.contains("protegida"))
+        #expect(message.contains("protected"))
         #expect(pr.branch.hasPrefix("sops-vault/secrets-enc-env-"))
         #expect(try await originValue("API_TOKEN") == .string("FAKE_one"))
         #expect(try await originValue("API_TOKEN", branch: pr.branch) == .string("FAKE_pr"))

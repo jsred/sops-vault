@@ -113,10 +113,10 @@ public struct GitClient: Sendable {
     /// Creates a commit on top of `parentRef` whose only change is `path` set to `content`.
     public func commit(_ content: Data, at path: String, onto parentRef: String, message: String, in root: URL) throws -> String {
         guard let parent = text(["rev-parse", "--verify", "--quiet", parentRef + "^{commit}"], in: root) else {
-            throw VaultError.message("No se encontró la rama de origin en este repositorio. Revisá la conexión y volvé a intentar.")
+            throw VaultError.localized("Origin's branch was not found in this repository. Check the connection and try again.")
         }
         guard let blob = text(["hash-object", "-w", "--stdin"], in: root, input: content) else {
-            throw VaultError.message("git no pudo guardar el archivo cifrado en el repositorio.")
+            throw VaultError.localized("git could not store the encrypted file in the repository.")
         }
         var mode = "100644"
         if let entry = text(["ls-tree", parent, "--", path], in: root), let existing = entry.split(separator: " ").first {
@@ -128,10 +128,10 @@ public struct GitClient: Sendable {
         guard (try? run(["read-tree", parent], in: root, extra: env))?.status == 0,
               (try? run(["update-index", "--add", "--cacheinfo", "\(mode),\(blob),\(path)"], in: root, extra: env))?.status == 0,
               let tree = text(["write-tree"], in: root, extra: env) else {
-            throw VaultError.message("git no pudo preparar el commit.")
+            throw VaultError.localized("git could not prepare the commit.")
         }
         guard let commit = text(["commit-tree", tree, "-p", parent, "-F", "-"], in: root, input: Data(message.utf8)) else {
-            throw VaultError.message("git no pudo crear el commit. Revisá que git tenga configurados user.name y user.email.")
+            throw VaultError.localized("git could not create the commit. Check that git has user.name and user.email set.")
         }
         return commit
     }
@@ -139,7 +139,7 @@ public struct GitClient: Sendable {
     /// Pushes without running local hooks: the commit only changes an encrypted data file.
     public func push(_ commit: String, to branch: String, in root: URL) -> PushResult {
         guard let result = try? run(["push", "--no-verify", "--porcelain", "origin", "\(commit):refs/heads/\(branch)"],
-                                    in: root, timeout: 45) else { return .failed("No se pudo conectar con origin.") }
+                                    in: root, timeout: 45) else { return .failed(String(localized: "Could not connect to origin.")) }
         if result.status == 0 { return .pushed }
         let text = result.combinedText.lowercased()
         if text.contains("protected branch") || text.contains("gh006") || text.contains("gh013")
@@ -150,9 +150,9 @@ public struct GitClient: Sendable {
             return .outdated
         }
         if text.contains("permission") || text.contains("denied") || text.contains("403") {
-            return .failed("No tenés permiso para subir a este repositorio.")
+            return .failed(String(localized: "You don't have permission to push to this repository."))
         }
-        return .failed("git no pudo subir el cambio. Revisá la conexión y volvé a intentar.")
+        return .failed(String(localized: "git could not push the change. Check the connection and try again."))
     }
 
     /// Puts the committed version of `path` back in the working tree. Used only on a copy SOPS Vault wrote itself.

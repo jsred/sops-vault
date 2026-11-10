@@ -15,6 +15,9 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/SOPSVault"
 
+# Localizations live in the app bundle so SwiftUI and String(localized:) find them via Bundle.main.
+cp -R Localization/*.lproj "$APP/Contents/Resources/"
+
 swift scripts/make-icon.swift "$BUILD_DIR/AppIcon.iconset"
 iconutil -c icns "$BUILD_DIR/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns"
 
@@ -31,7 +34,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
   <key>CFBundleVersion</key><string>${VERSION}</string>
-  <key>CFBundleDevelopmentRegion</key><string>es</string>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
+  <key>CFBundleLocalizations</key><array><string>en</string><string>es</string></array>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
   <key>NSHighResolutionCapable</key><true/>

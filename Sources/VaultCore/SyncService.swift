@@ -114,11 +114,11 @@ public actor SyncService {
     }
 
     private func repo(for file: URL) -> (Repo?, String) {
-        guard let git else { return (nil, "git no está instalado") }
-        guard let (root, path) = git.locate(file) else { return (nil, "no está en un repositorio git") }
-        guard let remote = git.remoteURL(in: root) else { return (nil, "el repositorio no tiene un remoto origin") }
-        if git.isIgnored(path, in: root) { return (nil, "git ignora este archivo") }
-        guard let branch = git.defaultBranch(in: root) else { return (nil, "no se pudo determinar la rama principal de origin") }
+        guard let git else { return (nil, String(localized: "git is not installed")) }
+        guard let (root, path) = git.locate(file) else { return (nil, String(localized: "not in a git repository")) }
+        guard let remote = git.remoteURL(in: root) else { return (nil, String(localized: "the repository has no origin remote")) }
+        if git.isIgnored(path, in: root) { return (nil, String(localized: "git ignores this file")) }
+        guard let branch = git.defaultBranch(in: root) else { return (nil, String(localized: "origin's default branch could not be determined")) }
         return (Repo(git: git, root: root, path: path, branch: branch, remote: remote), "")
     }
 
@@ -164,7 +164,7 @@ public actor SyncService {
         guard let remoteID = git.blobID(sourceRef, repo.path, in: repo.root),
               let remoteBlob = git.blob(id: remoteID, in: repo.root) else {
             if !fetchFailed && !git.hasRef(sourceRef, in: repo.root) {
-                throw VaultError.message("No se encontró la rama \(repo.branch) en origin.")
+                throw VaultError.localized("Branch \(repo.branch) was not found in origin.")
             }
             status.localCopy = .newFile
             let document = try await sops.load(url: file, configuration: configuration)
@@ -206,7 +206,7 @@ public actor SyncService {
             let document = try await sops.mutate(url: file, expectedCiphertext: displayed.ciphertext,
                                                  changes: changes, configuration: configuration)
             return .saved(LoadedFile(document: document, status: SyncStatus(storage: .local(reason)), localChanges: []),
-                          message: "Cambios guardados y verificados en esta Mac.")
+                          message: String(localized: "Changes saved and verified on this Mac."))
         }
         let git = repo.git
         for _ in 0..<3 {
@@ -232,7 +232,7 @@ public actor SyncService {
                                                configuration: configuration)
             if remoteBlob != nil && updated.ciphertext == base {
                 return .saved(try await describe(repo, file: file, pullRequest: pullRequest, fetchFailed: false, configuration: configuration),
-                              message: "No había cambios nuevos para subir; origin ya tenía esos valores.")
+                              message: String(localized: "There was nothing new to push; origin already had those values."))
             }
             let changedNames = Merge.diff(from: current.root, to: updated.root).map(\.name)
             let commit = try git.commit(updated.ciphertext, at: repo.path, onto: sourceRef,
@@ -245,18 +245,18 @@ public actor SyncService {
             var message: String
             switch outcome {
             case .pushed:
-                message = pullRequest == nil ? "Cambios subidos a origin/\(repo.branch)." : "Cambios agregados al PR abierto."
+                message = pullRequest == nil ? String(localized: "Changes pushed to origin/\(repo.branch).") : String(localized: "Changes added to the open PR.")
             case .outdated:
                 continue
             case .failed(let text):
                 throw VaultError.message(text)
             case .rejected:
                 guard pullRequest == nil else {
-                    throw VaultError.message("origin rechazó el cambio en la rama del PR. Revisá tus permisos en el repositorio.")
+                    throw VaultError.localized("Origin rejected the change on the PR branch. Check your permissions in the repository.")
                 }
                 let pr = try openPullRequest(repo, commit: commit, keys: changedNames)
-                message = pr.url == nil ? "La rama \(repo.branch) está protegida: subí el cambio a \(pr.branch). Abrí el PR en GitHub."
-                                        : "La rama \(repo.branch) está protegida: abrí un PR con el cambio."
+                message = pr.url == nil ? String(localized: "Branch \(repo.branch) is protected: the change was pushed to \(pr.branch). Open the PR on GitHub.")
+                                        : String(localized: "Branch \(repo.branch) is protected: a PR with the change was opened.")
             }
             settleOfflineCopy(repo)
             // Refresh the remote-tracking refs the status is computed from.
@@ -268,13 +268,13 @@ public actor SyncService {
                 // origin moved again between the push and the refresh; show what was saved.
                 loaded = LoadedFile(document: updated, status: loaded.status, localChanges: loaded.localChanges)
             }
-            if loaded.status.localCopy == .behind { message += " Tu copia local se actualiza con git pull." }
+            if loaded.status.localCopy == .behind { message += " " + String(localized: "Update your local copy with git pull.") }
             if remoteBlob == nil && git.blobID("HEAD", repo.path, in: repo.root) == nil {
-                message += " Antes de hacer git pull, borrá la copia local sin trackear de este archivo."
+                message += " " + String(localized: "Before running git pull, delete the untracked local copy of this file.")
             }
             return .saved(loaded, message: message)
         }
-        throw VaultError.message("origin cambió varias veces mientras guardabas. Volvé a intentar.")
+        throw VaultError.localized("Origin changed several times while saving. Try again.")
     }
 
     /// Offline fallback: writes the encrypted result to the local file and remembers it, so the next
@@ -282,13 +282,13 @@ public actor SyncService {
     public func saveOffline(_ file: URL, changes: [SecretChange], displayed: VaultDocument,
                             configuration: SOPSConfiguration) async throws -> LoadedFile {
         let (found, _) = repo(for: file)
-        guard let repo = found else { throw VaultError.message("Este archivo no se sincroniza con git.") }
+        guard let repo = found else { throw VaultError.localized("This file is not synced with git.") }
         let git = repo.git
         let localID = git.workingBlobID(repo.path, in: repo.root)
         let headID = git.blobID("HEAD", repo.path, in: repo.root)
         let offline = memory.offline(repo.id)
         guard localID == headID || localID == offline?.blob || headID == nil && localID == nil else {
-            throw VaultError.message("Tu copia local tiene cambios propios. Incorporalos antes de guardar sin conexión.")
+            throw VaultError.localized("Your local copy has its own changes. Bring them in before saving offline.")
         }
         let format = FileFormat.detect(url: file, data: displayed.ciphertext)
         let updated = try await sops.apply(changes, to: displayed.ciphertext, format: format,
@@ -323,7 +323,7 @@ public actor SyncService {
         switch repo.git.push(commit, to: branch, in: repo.root) {
         case .pushed: break
         case .failed(let text): throw VaultError.message(text)
-        default: throw VaultError.message("origin rechazó la rama del PR. Revisá tus permisos en el repositorio.")
+        default: throw VaultError.localized("Origin rejected the PR branch. Check your permissions in the repository.")
         }
         let web = GitClient.webRepository(remote: repo.remote)
         let body = """
@@ -331,8 +331,10 @@ public actor SyncService {
 
         \(keys.isEmpty ? "" : "Keys: " + keys.map { "`\($0)`" }.joined(separator: ", "))
         """
+        // PR text goes to GitHub and stays in English, like commit messages.
+        let prTitle = "Update \(repo.path) (SOPS Vault)"
         var url = pullRequests.create(in: repo.root, slug: web?.slug, head: branch, base: repo.branch,
-                                      title: "Update \(repo.path) (SOPS Vault)", body: body)
+                                      title: prTitle, body: body)
         if url == nil, let web {
             url = URL(string: web.web.absoluteString + "/compare/\(repo.branch)...\(branch)?expand=1")
         }

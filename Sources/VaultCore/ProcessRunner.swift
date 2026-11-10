@@ -38,8 +38,8 @@ public enum ProcessRunner {
         let errors = PipeDrain(stderr.fileHandleForReading)
         defer { output.finish(); errors.finish() }
         do { try process.run() } catch {
-            throw VaultError.message(tool == "SOPS" ? "No se pudo ejecutar SOPS. Revisá la ruta del binario en Ajustes."
-                                                    : "No se pudo ejecutar \(tool).")
+            throw tool == "SOPS" ? VaultError.localized("SOPS could not be run. Check the binary path in Settings.")
+                                 : VaultError.localized("\(tool) could not be run.")
         }
         let writer = DispatchGroup()
         writer.enter()
@@ -56,8 +56,8 @@ public enum ProcessRunner {
                 process.waitUntilExit()
             }
             _ = writer.wait(timeout: .now() + 1)
-            throw VaultError.message(tool == "SOPS" ? "SOPS tardó demasiado. Revisá la clave age y volvé a intentar."
-                                                    : "\(tool) tardó demasiado. Revisá la conexión y volvé a intentar.")
+            throw tool == "SOPS" ? VaultError.localized("SOPS took too long. Check the age key and try again.")
+                                 : VaultError.localized("\(tool) took too long. Check the connection and try again.")
         }
         // The child has exited, so everything it wrote is already in the kernel buffer.
         _ = writer.wait(timeout: .now() + 1)

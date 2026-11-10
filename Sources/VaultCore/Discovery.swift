@@ -26,7 +26,7 @@ public enum Discovery {
         var warnings: [String] = []
         for root in roots {
             guard let info = try? root.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]), info.isSymbolicLink != true else {
-                warnings.append("Una referencia ya no está disponible. Volvé a agregarla."); continue
+                warnings.append(String(localized: "A reference is no longer available. Add it again.")); continue
             }
             // The root itself is not a symlink; resolve parent links (/var → /private/var) so
             // files reached through different references deduplicate to one canonical path.
@@ -41,12 +41,12 @@ public enum Discovery {
             if info.isDirectory == true {
                 guard let enumerator = fm.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
                     options: [], errorHandler: { _, _ in
-                        warnings.append("No se pudo leer parte de una carpeta. Revisá sus permisos."); return true
+                        warnings.append(String(localized: "Part of a folder could not be read. Check its permissions.")); return true
                     }) else { continue }
                 var count = 0
                 for case let url as URL in enumerator {
                     count += 1
-                    if count > 30_000 { warnings.append("La búsqueda llegó a 30.000 entradas. Agregá una carpeta más específica."); break }
+                    if count > 30_000 { warnings.append(String(localized: "The search reached 30,000 entries. Add a more specific folder.")); break }
                     let info = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
                     if info?.isSymbolicLink == true || ignored.contains(url.lastPathComponent) || url.lastPathComponent.hasPrefix(".sops-vault-") {
                         enumerator.skipDescendants(); continue

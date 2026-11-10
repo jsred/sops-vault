@@ -2,6 +2,8 @@ import Foundation
 
 public enum VaultError: LocalizedError, Equatable {
     case message(String)
+    /// A user-facing message looked up in the app's Localizable.strings (English is the key).
+    public static func localized(_ value: String.LocalizationValue) -> VaultError { .message(String(localized: value)) }
     public var errorDescription: String? {
         switch self { case .message(let text): return text }
     }
@@ -37,12 +39,12 @@ public enum JSONValue: Equatable, Sendable, Codable {
     public var display: String { if case .string(let v) = self { return v }; return json }
     public var typeName: String {
         switch self {
-        case .object: return "Objeto"
-        case .array: return "Lista"
-        case .string: return "Texto"
-        case .number: return "Número"
-        case .bool: return "Booleano"
-        case .null: return "Null"
+        case .object: return String(localized: "Object")
+        case .array: return String(localized: "List")
+        case .string: return String(localized: "Text")
+        case .number: return String(localized: "Number")
+        case .bool: return String(localized: "Boolean")
+        case .null: return String(localized: "Null")
         }
     }
     public subscript(path: [PathPart]) -> JSONValue? {
@@ -56,7 +58,7 @@ public enum JSONValue: Equatable, Sendable, Codable {
 
     public func updating(path: [PathPart], value: JSONValue?) throws -> JSONValue {
         guard let first = path.first else {
-            guard let value else { throw VaultError.message("No se puede eliminar la raíz del documento.") }
+            guard let value else { throw VaultError.localized("The document root cannot be deleted.") }
             return value
         }
         let rest = Array(path.dropFirst())
@@ -64,7 +66,7 @@ public enum JSONValue: Equatable, Sendable, Codable {
         case (.object(var object), .key(let key)):
             if rest.isEmpty { object[key] = value }
             else {
-                guard let child = object[key] else { throw VaultError.message("La clave ya no existe. Recargá el archivo.") }
+                guard let child = object[key] else { throw VaultError.localized("The key no longer exists. Reload the file.") }
                 object[key] = try child.updating(path: rest, value: value)
             }
             return .object(object)
@@ -72,7 +74,7 @@ public enum JSONValue: Equatable, Sendable, Codable {
             if rest.isEmpty && value == nil { array.remove(at: index) }
             else { array[index] = try array[index].updating(path: rest, value: value) }
             return .array(array)
-        default: throw VaultError.message("La ruta no corresponde a una clave válida.")
+        default: throw VaultError.localized("The path does not match a valid key.")
         }
     }
 }

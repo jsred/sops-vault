@@ -7,7 +7,7 @@ private let vaultAccent = Color(red: 0.21, green: 0.62, blue: 0.53)
 struct VaultView: View {
     @ObservedObject var model: VaultModel
     @ViewState<Bool> private var dropTarget = false
-    private var saveTitle: String { model.pending.isEmpty ? "Guardar cambios" : "Guardar cambios (\(model.pending.count))" }
+    private var saveTitle: LocalizedStringKey { model.pending.isEmpty ? "Save Changes" : "Save Changes (\(model.pending.count))" }
     var body: some View {
         NavigationSplitView {
             sidebar
@@ -16,21 +16,21 @@ struct VaultView: View {
             ZStack {
                 Color(nsColor: .windowBackgroundColor)
                 if model.locked {
-                    EmptyVault(symbol: "lock.fill", title: "Tu bóveda está bloqueada", subtitle: model.preferences.useAuthentication
-                        ? "Usá Touch ID o tu contraseña de macOS para continuar."
-                        : "Los valores se quitaron de la vista. Desbloqueá para continuar.") {
+                    EmptyVault(symbol: "lock.fill", title: "Your vault is locked", subtitle: model.preferences.useAuthentication
+                        ? "Use Touch ID or your macOS password to continue."
+                        : "Values were removed from view. Unlock to continue.") {
                             Button(action: model.unlock) {
-                                Label(model.authenticating ? "Autenticando…" : "Desbloquear", systemImage: "touchid")
+                                Label(model.authenticating ? LocalizedStringKey("Authenticating…") : "Unlock", systemImage: "touchid")
                             }.buttonStyle(.borderedProminent).disabled(model.authenticating)
                         }
                 } else if let file = model.selectedFile {
                     FileDetail(model: model, file: file)
                 } else {
-                    EmptyVault(symbol: "lock.shield", title: "Tus secretos, bajo llave", subtitle: "Agregá una carpeta de proyecto o archivos SOPS.\nDescifrá, buscá y editá sin salir de tu Mac.") {
+                    EmptyVault(symbol: "lock.shield", title: "Your secrets, under lock", subtitle: "Add a project folder or SOPS files.\nDecrypt, search and edit without leaving your Mac.") {
                         Button { ReferencePicker.show { model.add($0) } } label: {
-                            Label("Agregar archivos o carpetas", systemImage: "folder.badge.plus")
+                            Label("Add Files or Folders", systemImage: "folder.badge.plus")
                         }.buttonStyle(.borderedProminent).controlSize(.large)
-                        Text("También podés arrastrarlos a esta ventana")
+                        Text("You can also drag them into this window")
                             .font(.callout).foregroundStyle(.secondary).padding(.top, 4)
                     }
                 }
@@ -41,7 +41,7 @@ struct VaultView: View {
                         Image(systemName: "info.circle.fill").foregroundStyle(vaultAccent)
                         Text(notice).font(.callout).textSelection(.disabled)
                         Button { model.notice = nil } label: { Image(systemName: "xmark") }
-                            .buttonStyle(.plain).help("Cerrar aviso").accessibilityLabel("Cerrar aviso")
+                            .buttonStyle(.plain).help("Dismiss notice").accessibilityLabel("Dismiss notice")
                     }
                     .padding(12).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                     .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.quaternary))
@@ -52,26 +52,26 @@ struct VaultView: View {
         .tint(vaultAccent)
         .toolbar {
             ToolbarItemGroup {
-                Button { ReferencePicker.show { model.add($0) } } label: { Label("Agregar referencias", systemImage: "folder.badge.plus") }
-                    .help("Agregar archivos o carpetas (⌘O)")
-                Button { model.rescan() } label: { Label("Buscar archivos", systemImage: "arrow.triangle.2.circlepath") }
-                    .disabled(model.scanning).help("Volver a buscar archivos en las referencias")
-                SettingsLink { Label("Ajustes", systemImage: "gearshape") }.help("Ajustes")
-                Button(action: model.lock) { Label("Bloquear", systemImage: "lock") }
-                    .disabled(model.locked).help("Bloquear bóveda (⇧⌘L)")
+                Button { ReferencePicker.show { model.add($0) } } label: { Label("Add References", systemImage: "folder.badge.plus") }
+                    .help("Add files or folders (⌘O)")
+                Button { model.rescan() } label: { Label("Find Files", systemImage: "arrow.triangle.2.circlepath") }
+                    .disabled(model.scanning).help("Search the references for files again")
+                SettingsLink { Label("Settings", systemImage: "gearshape") }.help("Settings")
+                Button(action: model.lock) { Label("Lock", systemImage: "lock") }
+                    .disabled(model.locked).help("Lock vault (⇧⌘L)")
             }
             ToolbarItemGroup {
                 if !model.pending.isEmpty {
-                    Button("Descartar", action: model.discardChanges).disabled(model.busy)
-                        .help("Descartar los cambios sin guardar de este archivo")
+                    Button("Discard", action: model.discardChanges).disabled(model.busy)
+                        .help("Discard this file's unsaved changes")
                 }
                 Button(action: { model.saveChanges() }) {
-                    Label(model.saving ? "Guardando…" : saveTitle, systemImage: "arrow.up.circle.fill")
+                    Label(model.saving ? LocalizedStringKey("Saving…") : saveTitle, systemImage: "arrow.up.circle.fill")
                         .labelStyle(.titleAndIcon)
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!model.canSave)
-                .help(model.status?.isGit == true ? "Cifrar y subir los cambios a origin (⌘S)" : "Cifrar y guardar los cambios (⌘S)")
+                .help(model.status?.isGit == true ? LocalizedStringKey("Encrypt and push the changes to origin (⌘S)") : "Encrypt and save the changes (⌘S)")
             }
         }
         .overlay {
@@ -89,24 +89,25 @@ struct VaultView: View {
             }
             return !providers.isEmpty
         }
-        .onChange(of: model.selection) { _, _ in model.loadSelection() }
+        // initial: a selection made before the view appears (e.g. on launch) must load too.
+        .onChange(of: model.selection, initial: true) { _, _ in model.loadSelection() }
         .sheet(item: $model.editor) { draft in SecretEditor(model: model, draft: draft) }
-        .alert("No se pudo completar la acción", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
-            Button("Aceptar") { model.error = nil }
+        .alert("The action could not be completed", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
+            Button("OK") { model.error = nil }
         } message: { Text(model.error ?? "") }
-        .confirmationDialog("Otro cambio llegó a origin", isPresented: Binding(
+        .confirmationDialog("Another change reached origin", isPresented: Binding(
             get: { !model.conflicts.isEmpty }, set: { if !$0 { model.conflicts = [] } }), titleVisibility: .visible) {
-                Button("Usar mis valores") { model.saveChanges(resolution: .keepMine) }
-                Button("Usar los de origin") { model.saveChanges(resolution: .keepTheirs) }
-                Button("Cancelar", role: .cancel) { model.conflicts = [] }
+                Button("Use My Values") { model.saveChanges(resolution: .keepMine) }
+                Button("Use Origin's Values") { model.saveChanges(resolution: .keepTheirs) }
+                Button("Cancel", role: .cancel) { model.conflicts = [] }
             } message: {
-                Text("Estas claves cambiaron en origin desde que empezaste a editar: \(model.conflicts.map(\.name).joined(separator: ", ")). El resto de tus cambios se aplica sobre la versión nueva.")
+                Text("These keys changed in origin since you started editing: \(model.conflicts.map(\.name).joined(separator: ", ")). Your other changes are applied on top of the new version.")
             }
-        .alert("No hay conexión con origin", isPresented: $model.offerOfflineSave) {
-            Button("Guardar solo en esta Mac") { model.saveOffline() }
-            Button("Cancelar", role: .cancel) {}
+        .alert("Origin is unreachable", isPresented: $model.offerOfflineSave) {
+            Button("Save on This Mac Only") { model.saveOffline() }
+            Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Tus cambios siguen pendientes. Podés guardarlos cifrados solo en esta Mac y subirlos cuando vuelva la conexión.")
+            Text("Your changes are still pending. You can save them encrypted on this Mac only and push them when you are back online.")
         }
     }
     private var sidebar: some View {
@@ -115,7 +116,7 @@ struct VaultView: View {
                 Image(systemName: "lock.shield.fill").font(.title2).foregroundStyle(vaultAccent)
                 VStack(alignment: .leading, spacing: 3) {
                     Text("SOPS Vault").font(.headline)
-                    Text("ESPACIO PERSONAL").font(.system(size: 9, weight: .semibold, design: .rounded))
+                    Text("PERSONAL SPACE").font(.system(size: 9, weight: .semibold, design: .rounded))
                         .tracking(1.3).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -123,8 +124,8 @@ struct VaultView: View {
             }.padding(18)
             List(selection: $model.selection) {
                 if model.files.isEmpty {
-                    Section("Proyectos") {
-                        Text(model.scanning ? "Buscando archivos…" : "Todavía no hay archivos")
+                    Section("Projects") {
+                        Text(model.scanning ? LocalizedStringKey("Searching for files…") : "No files yet")
                             .font(.callout).foregroundStyle(.secondary).padding(.vertical, 4)
                     }
                 }
@@ -138,7 +139,7 @@ struct VaultView: View {
                                         Text(file.url.lastPathComponent).lineLimit(1)
                                         if !(model.pendingByFile[file.id] ?? []).isEmpty {
                                             Circle().fill(.orange).frame(width: 7, height: 7)
-                                                .help("Cambios sin guardar").accessibilityLabel("Cambios sin guardar")
+                                                .help("Unsaved changes").accessibilityLabel("Unsaved changes")
                                         }
                                     }
                                     if file.relativePath != file.url.lastPathComponent {
@@ -155,7 +156,7 @@ struct VaultView: View {
                 Image(systemName: "checkmark.shield").foregroundStyle(vaultAccent)
                 Text("SOPS + age").font(.caption)
                 Spacer()
-                Text("\(model.files.count) archivos").font(.caption).foregroundStyle(.secondary)
+                Text(model.files.count == 1 ? LocalizedStringKey("1 file") : "\(model.files.count) files").font(.caption).foregroundStyle(.secondary)
             }.padding(16)
         }
     }
@@ -163,8 +164,8 @@ struct VaultView: View {
 
 struct EmptyVault<Actions: View>: View {
     let symbol: String
-    let title: String
-    let subtitle: String
+    let title: LocalizedStringKey
+    let subtitle: LocalizedStringKey
     @ViewBuilder let actions: () -> Actions
     var body: some View {
         VStack(spacing: 18) {
@@ -200,49 +201,49 @@ struct FileDetail: View {
                         .background(vaultAccent.opacity(0.1), in: Capsule())
                 }
                 HStack {
-                    Text("\(model.document?.entries.count ?? 0) claves").font(.callout.weight(.medium))
+                    Text((model.document?.entries.count ?? 0) == 1 ? LocalizedStringKey("1 key") : "\(model.document?.entries.count ?? 0) keys").font(.callout.weight(.medium))
                     Text("·").foregroundStyle(.tertiary)
                     if model.pending.isEmpty {
-                        Text("Valores solo en memoria").font(.callout).foregroundStyle(.secondary)
+                        Text("Values in memory only").font(.callout).foregroundStyle(.secondary)
                     } else {
-                        Text(model.pending.count == 1 ? "1 cambio sin guardar" : "\(model.pending.count) cambios sin guardar")
+                        Text(model.pending.count == 1 ? LocalizedStringKey("1 unsaved change") : "\(model.pending.count) unsaved changes")
                             .font(.callout.weight(.medium)).foregroundStyle(.orange)
                     }
                     Spacer()
                     Button(action: model.loadSelection) { Image(systemName: "arrow.clockwise") }
-                        .help("Recargar archivo (⌘R)").accessibilityLabel("Recargar archivo").disabled(model.busy)
-                    Button { model.editor = EditorDraft(entry: nil) } label: { Label("Nueva clave", systemImage: "plus") }
+                        .help("Reload file (⌘R)").accessibilityLabel("Reload File").disabled(model.busy)
+                    Button { model.editor = EditorDraft(entry: nil) } label: { Label("New Key", systemImage: "plus") }
                         .disabled(model.document == nil || model.busy)
                 }
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Buscar por nombre de clave", text: $model.search).textFieldStyle(.plain)
-                        .accessibilityLabel("Buscar por nombre de clave")
+                    TextField("Search by key name", text: $model.search).textFieldStyle(.plain)
+                        .accessibilityLabel("Search by key name")
                     if !model.search.isEmpty {
                         Button { model.search = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
-                            .buttonStyle(.plain).accessibilityLabel("Limpiar búsqueda")
+                            .buttonStyle(.plain).accessibilityLabel("Clear search")
                     }
                 }.padding(10).background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
             }.padding(26)
             Divider()
             if model.busy && model.document == nil {
-                VStack(spacing: 12) { ProgressView(); Text("Descifrando con SOPS…").foregroundStyle(.secondary) }
+                VStack(spacing: 12) { ProgressView(); Text("Decrypting with SOPS…").foregroundStyle(.secondary) }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if model.document == nil {
                 ContentUnavailableView {
-                    Label("No se pudo abrir el archivo", systemImage: "key.slash")
-                } description: { Text("Revisá SOPS y la identidad age en Ajustes y volvé a intentar.") }
+                    Label("The file could not be opened", systemImage: "key.slash")
+                } description: { Text("Check SOPS and the age identity in Settings and try again.") }
                 actions: {
-                    SettingsLink { Text("Abrir Ajustes") }
-                    Button("Volver a intentar", action: model.loadSelection)
+                    SettingsLink { Text("Open Settings") }
+                    Button("Try Again", action: model.loadSelection)
                 }
             } else if model.rows.isEmpty {
-                ContentUnavailableView(model.search.isEmpty ? "Este archivo no tiene claves" : "No se encontraron claves",
+                ContentUnavailableView(model.search.isEmpty ? LocalizedStringKey("This file has no keys") : "No keys found",
                     systemImage: model.search.isEmpty ? "key" : "magnifyingglass", description: Text(model.search.isEmpty
-                        ? "Agregá una clave para empezar." : "Probá con otro nombre. La búsqueda no examina valores."))
+                        ? LocalizedStringKey("Add a key to get started.") : "Try another name. Search does not look at values."))
             } else {
                 HStack {
-                    Text("CLAVE"); Spacer(); Text("VALOR PROTEGIDO")
+                    Text("KEY"); Spacer(); Text("PROTECTED VALUE")
                 }.font(.system(size: 10, weight: .semibold)).tracking(0.8).foregroundStyle(.secondary)
                     .padding(.horizontal, 28).padding(.vertical, 13).background(.quaternary.opacity(0.16))
                 ScrollView {
@@ -284,37 +285,37 @@ struct SecretRow: View {
                         .textSelection(.enabled).strikethrough(deleted)
                 } else {
                     Text("••••••••").font(.system(size: 17, weight: .medium, design: .monospaced))
-                        .tracking(2).foregroundStyle(.tertiary).accessibilityLabel("Valor oculto")
+                        .tracking(2).foregroundStyle(.tertiary).accessibilityLabel("Hidden value")
                 }
             }.frame(minWidth: 100, maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 8) {
                 Button {
                     if visible { model.revealed.remove(entry.id) } else { model.revealed.insert(entry.id) }
                 } label: { Image(systemName: visible ? "eye.slash" : "eye") }
-                    .help(visible ? "Ocultar valor" : "Mostrar valor").accessibilityLabel(visible ? "Ocultar valor" : "Mostrar valor")
+                    .help(visible ? LocalizedStringKey("Hide value") : "Show value").accessibilityLabel(visible ? LocalizedStringKey("Hide value") : "Show value")
                 Button { model.copy(entry) } label: { Image(systemName: "doc.on.doc") }
-                    .help("Copiar por 30 segundos").accessibilityLabel("Copiar valor por 30 segundos")
+                    .help("Copy for 30 seconds").accessibilityLabel("Copy value for 30 seconds")
                 // Always laid out so the value column stays aligned across rows.
                 Button { model.undo(row) } label: { Image(systemName: "arrow.uturn.backward") }
-                    .help("Deshacer este cambio").accessibilityLabel("Deshacer este cambio")
+                    .help("Undo this change").accessibilityLabel("Undo this change")
                     .opacity(row.state == .unchanged ? 0 : 1).disabled(row.state == .unchanged)
                     .accessibilityHidden(row.state == .unchanged)
                 Menu {
-                    Button("Editar…", systemImage: "pencil") { model.editor = EditorDraft(entry: entry) }.disabled(deleted)
-                    Button("Eliminar clave", systemImage: "trash", role: .destructive) { model.stage(path: entry.path, value: nil) }
+                    Button("Edit…", systemImage: "pencil") { model.editor = EditorDraft(entry: entry) }.disabled(deleted)
+                    Button("Delete Key", systemImage: "trash", role: .destructive) { model.stage(path: entry.path, value: nil) }
                         .disabled(deleted)
                 } label: { Image(systemName: "ellipsis") }
-                    .menuStyle(.borderlessButton).fixedSize().help("Acciones de la clave").accessibilityLabel("Acciones de la clave")
+                    .menuStyle(.borderlessButton).fixedSize().help("Key actions").accessibilityLabel("Key actions")
             }.buttonStyle(.borderless).foregroundStyle(.secondary).disabled(model.busy)
         }.padding(.horizontal, 26).padding(.vertical, 17)
         .background(row.state == .unchanged ? Color.clear : Color.orange.opacity(0.05))
     }
-    private var badge: (String, Color)? {
+    private var badge: (LocalizedStringKey, Color)? {
         switch row.state {
         case .unchanged: return nil
-        case .modified: return ("Modificada", .orange)
-        case .added: return ("Nueva", .green)
-        case .deleted: return ("Se eliminará", .red)
+        case .modified: return ("Modified", .orange)
+        case .added: return ("New", .green)
+        case .deleted: return ("Will be deleted", .red)
         }
     }
 }
@@ -329,38 +330,38 @@ struct SyncBar: View {
             Text(text).font(.caption).foregroundStyle(.secondary).lineLimit(2)
             Spacer()
             if let status = model.status {
-                if let url = status.pullRequest?.url { Link("Ver PR", destination: url).font(.caption) }
+                if let url = status.pullRequest?.url { Link("View PR", destination: url).font(.caption) }
                 if !model.localChanges.isEmpty && status.localCopy == .modified {
-                    Button("Incorporar cambios locales", action: model.incorporateLocalChanges).font(.caption).disabled(model.busy)
+                    Button("Bring In Local Changes", action: model.incorporateLocalChanges).font(.caption).disabled(model.busy)
                 }
                 if status.isGit {
                     Menu {
-                        Toggle("Abrir siempre un PR en este repositorio", isOn: Binding(
+                        Toggle("Always open a PR in this repository", isOn: Binding(
                             get: { model.status?.alwaysPullRequest ?? false }, set: { model.setAlwaysPullRequest($0) }))
                     } label: { Image(systemName: "arrow.triangle.branch") }
-                        .menuStyle(.borderlessButton).fixedSize().help("Cómo se suben los cambios")
+                        .menuStyle(.borderlessButton).fixedSize().help("How changes are pushed")
                 }
             }
         }.padding(.horizontal, 24).padding(.vertical, 12)
     }
     private var text: String {
-        if model.saving { return model.status?.isGit == true ? "Cifrando, verificando y subiendo a origin…" : "Cifrando y verificando…" }
-        if model.busy { return "Descifrando con SOPS…" }
-        guard let status = model.status else { return "Los cambios se guardan cifrados con SOPS." }
+        if model.saving { return model.status?.isGit == true ? String(localized: "Encrypting, verifying and pushing to origin…") : String(localized: "Encrypting and verifying…") }
+        if model.busy { return String(localized: "Decrypting with SOPS…") }
+        guard let status = model.status else { return String(localized: "Changes are saved encrypted with SOPS.") }
         switch status.storage {
         case .local(let reason):
-            return "Solo en esta Mac (\(reason)). «Guardar cambios» escribe el archivo cifrado."
+            return String(localized: "On this Mac only (\(reason)). “Save Changes” writes the encrypted file.")
         case .git(let branch):
             var parts: [String] = []
-            if status.pullRequest != nil { parts.append("Mostrando el PR abierto; los cambios se suman a ese PR.") }
-            else { parts.append(status.alwaysPullRequest ? "Se guarda con un PR hacia origin/\(branch)." : "Sincronizado con origin/\(branch).") }
-            if status.fetchFailed { parts.append("Sin conexión: es la última versión conocida.") }
+            if status.pullRequest != nil { parts.append(String(localized: "Showing the open PR; changes are added to it.")) }
+            else { parts.append(status.alwaysPullRequest ? String(localized: "Saved through a PR to origin/\(branch).") : String(localized: "Synced with origin/\(branch).")) }
+            if status.fetchFailed { parts.append(String(localized: "Offline: this is the last known version.")) }
             switch status.localCopy {
             case .current: break
-            case .behind: parts.append("Tu copia local está desactualizada (git pull).")
-            case .modified: parts.append("Tu copia local tiene cambios que no están en origin.")
-            case .savedOffline: parts.append("Hay cambios guardados sin conexión para subir.")
-            case .newFile: parts.append("El archivo todavía no está en origin: «Guardar cambios» lo sube.")
+            case .behind: parts.append(String(localized: "Your local copy is out of date (git pull)."))
+            case .modified: parts.append(String(localized: "Your local copy has changes that are not in origin."))
+            case .savedOffline: parts.append(String(localized: "There are changes saved offline to push."))
+            case .newFile: parts.append(String(localized: "The file is not in origin yet: “Save Changes” uploads it."))
             }
             return parts.joined(separator: " ")
         }
