@@ -7,9 +7,15 @@ public struct ProcessResult: Sendable {
 
 /// Pipes only. stderr is drained but never exposed: parsers may echo a secret in an error.
 public enum ProcessRunner {
+    /// Concurrent launches let one child inherit another child's pipe descriptors, so a reader
+    /// never sees EOF. Runs are short; serializing them process-wide removes the race entirely.
+    private static let launchLock = NSLock()
+
     public static func run(executable: URL, arguments: [String], input: Data = Data(),
                            environment: [String: String], directory: URL? = nil,
                            timeout: TimeInterval = 30) throws -> ProcessResult {
+        launchLock.lock()
+        defer { launchLock.unlock() }
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
@@ -49,10 +55,13 @@ public enum ProcessRunner {
                 kill(process.processIdentifier, SIGKILL)
                 process.waitUntilExit()
             }
-            io.wait()
+            _ = io.wait(timeout: .now() + 2)
             throw VaultError.message("SOPS tardó demasiado. Revisá la clave age y volvé a intentar.")
         }
-        io.wait()
+        // The child exited; its pipes reach EOF promptly unless a descriptor leaked. Never hang.
+        guard io.wait(timeout: .now() + 5) == .success else {
+            throw VaultError.message("SOPS terminó pero su salida quedó abierta. Volvé a intentar.")
+        }
         return ProcessResult(output: reader.get(), status: process.terminationStatus)
     }
 }
