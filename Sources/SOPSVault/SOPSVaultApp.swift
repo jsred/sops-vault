@@ -8,7 +8,9 @@ import AppKit
     init() {
         let preferences = Preferences()
         _preferences = StateObject(wrappedValue: preferences)
-        _model = StateObject(wrappedValue: VaultModel(preferences: preferences))
+        let model = VaultModel(preferences: preferences)
+        _model = StateObject(wrappedValue: model)
+        OpenRequests.shared.handler = { [weak model] urls in model?.add(urls) }
     }
     var body: some Scene {
         Window("SOPS Vault", id: "vault") {
@@ -16,9 +18,6 @@ import AppKit
                 .environmentObject(preferences)
                 .frame(minWidth: 900, minHeight: 590)
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in model.shutdown() }
-                .onReceive(NotificationCenter.default.publisher(for: .vaultOpenFiles)) { event in
-                    if let urls = event.object as? [URL] { model.add(urls) }
-                }
                 .onChange(of: preferences.sopsPath) { _, _ in model.configurationChanged() }
                 .onChange(of: preferences.keyPath) { _, _ in model.configurationChanged() }
                 .onChange(of: preferences.useAuthentication) { _, _ in model.configurationChanged() }
@@ -42,7 +41,18 @@ import AppKit
     private func chooseReferences() { ReferencePicker.show { model.add($0) } }
 }
 
-extension Notification.Name { static let vaultOpenFiles = Notification.Name("vaultOpenFiles") }
+/// Buffers Finder/`open -a` requests that arrive before the model is ready (cold launch).
+@MainActor final class OpenRequests {
+    static let shared = OpenRequests()
+    private var pending: [URL] = []
+    var handler: (([URL]) -> Void)? { didSet { flush() } }
+    func receive(_ urls: [URL]) { pending += urls; flush() }
+    private func flush() {
+        guard let handler, !pending.isEmpty else { return }
+        let urls = pending; pending = []
+        handler(urls)
+    }
+}
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -54,7 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool { false }
     func application(_ application: NSApplication, open urls: [URL]) {
-        NotificationCenter.default.post(name: .vaultOpenFiles, object: urls)
+        MainActor.assumeIsolated { OpenRequests.shared.receive(urls) }
     }
 }
 
