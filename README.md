@@ -52,6 +52,9 @@ The app is ad-hoc signed, not notarized. The first time, right-click the app →
 Integration tests generate a throwaway age key and fake fixtures in a private temp directory. They
 run the real `sops` binary and never touch your real identity.
 
+CI runs only the unit tests (`SOPS_VAULT_SKIP_INTEGRATION=1`), because subprocesses hang inside
+Xcode 16.4's test helper on GitHub's macOS 15 runners. Run the full suite locally before sending changes.
+
 ```sh
 swift test                  # with Xcode
 # Command Line Tools only (no Xcode): point the compiler at the Swift Testing macro plugin
