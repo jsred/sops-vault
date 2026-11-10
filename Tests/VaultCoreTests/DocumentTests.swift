@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import VaultCore
 
-@Suite struct DocumentTests {
+@Suite(.timeLimit(.minutes(1))) struct DocumentTests {
     @Test func testTypedJSONRoundTripAndPaths() throws {
         let bytes = Data(#"{"text":"fake","large":9007199254740993,"flag":true,"nil":null,"array":[1,"two"],"empty":{}}"#.utf8)
         let root = try JSONDecoder().decode(JSONValue.self, from: bytes)

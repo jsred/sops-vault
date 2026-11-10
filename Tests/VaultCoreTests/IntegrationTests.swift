@@ -4,7 +4,7 @@ import Testing
 
 /// All identities and fixtures are generated under a fresh private temp directory.
 /// Never uses the user's real identity, repos or secret files.
-@Suite final class IntegrationTests {
+@Suite(.timeLimit(.minutes(1))) final class IntegrationTests {
     private var directory: URL!
     private var config: SOPSConfiguration!
     private var recipient = ""

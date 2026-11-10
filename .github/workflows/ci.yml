@@ -6,11 +6,13 @@ on:
 jobs:
   test:
     runs-on: macos-15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Install sops and age
         run: brew install sops age
       - name: Test
-        run: swift test
+        run: swift test --disable-xctest
+        timeout-minutes: 8
       - name: Package
         run: ./scripts/package.sh
