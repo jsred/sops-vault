@@ -1,0 +1,16 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install sops and age
+        run: brew install sops age
+      - name: Test
+        run: swift test
+      - name: Package
+        run: ./scripts/package.sh

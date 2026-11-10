@@ -1,0 +1,46 @@
+#!/bin/zsh
+# Builds a release binary and wraps it in dist/SOPS Vault.app (ad-hoc signed).
+set -euo pipefail
+cd "${0:A:h}/.."
+
+VERSION="${VERSION:-1.0.0}"
+APP="dist/SOPS Vault.app"
+BUILD_DIR="$(mktemp -d)"
+trap 'rm -rf "$BUILD_DIR"' EXIT
+
+swift build -c release --product SOPSVault
+BIN="$(swift build -c release --show-bin-path)/SOPSVault"
+
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cp "$BIN" "$APP/Contents/MacOS/SOPSVault"
+
+swift scripts/make-icon.swift "$BUILD_DIR/AppIcon.iconset"
+iconutil -c icns "$BUILD_DIR/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns"
+
+cat > "$APP/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>SOPS Vault</string>
+  <key>CFBundleDisplayName</key><string>SOPS Vault</string>
+  <key>CFBundleIdentifier</key><string>io.github.jsred.sops-vault</string>
+  <key>CFBundleExecutable</key><string>SOPSVault</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+  <key>CFBundleVersion</key><string>${VERSION}</string>
+  <key>CFBundleDevelopmentRegion</key><string>es</string>
+  <key>LSMinimumSystemVersion</key><string>14.0</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSSupportsAutomaticTermination</key><false/>
+  <key>NSHumanReadableCopyright</key><string>MIT License</string>
+</dict>
+</plist>
+PLIST
+
+codesign --force --deep --sign - --options runtime "$APP"
+codesign --verify --strict --verbose=2 "$APP"
+echo "Built $APP"
