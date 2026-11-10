@@ -4,13 +4,7 @@ import Testing
 
 /// All identities and fixtures are generated under a fresh private temp directory.
 /// Never uses the user's real identity, repos or secret files.
-/// Skipped where SOPS_VAULT_SKIP_INTEGRATION is set (GitHub's macOS 15 runners): subprocesses launched
-/// from Xcode 16.4's swiftpm-testing-helper never complete there, although the same ProcessRunner works
-/// in a standalone executable on those runners.
-@Suite(.timeLimit(.minutes(1)),
-       .disabled(if: ProcessInfo.processInfo.environment["SOPS_VAULT_SKIP_INTEGRATION"] != nil,
-                 "Integration tests disabled by SOPS_VAULT_SKIP_INTEGRATION"))
-final class IntegrationTests {
+@Suite(.timeLimit(.minutes(1))) final class IntegrationTests {
     private var directory: URL!
     private var config: SOPSConfiguration!
     private var recipient = ""
