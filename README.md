@@ -74,6 +74,30 @@ open "dist/SOPS Vault.app"
 The app is ad-hoc signed, not notarized. The first time, right-click the app → **Open**, or run
 `xattr -dr com.apple.quarantine "SOPS Vault.app"` if you downloaded it.
 
+## Automatic updates
+
+Each Mac can keep `/Applications/SOPS Vault.app` up to date by building signed releases from source.
+Building locally means the app never carries a quarantine flag, so it runs without notarization.
+
+```sh
+# Trust your release signing key and install the hourly updater (LaunchAgent):
+./scripts/install-updater.sh ~/.ssh/<signing-key>.pub
+```
+
+- The updater fetches tags from GitHub and takes the newest `vX.Y.Z` whose signature verifies against
+  `~/.config/sops-vault/allowed_signers`. That file lives only on the Mac, so a pushed commit or tag
+  cannot make itself trusted. Unsigned tags, or tags signed by another key, are skipped.
+- It builds in `~/Library/Caches/io.github.jsred.sops-vault`, runs the test suite, and installs only if
+  everything passes. If the app is open, the update waits until it quits.
+- Logs: `~/Library/Logs/sops-vault-updater.log` (summary) and `sops-vault-build.log` (build output).
+
+To publish a release, sign tags with an SSH key (`git config gpg.format ssh` and
+`git config user.signingkey ~/.ssh/<signing-key>.pub` in this repo), then run:
+
+```sh
+./scripts/release.sh 1.2.0   # tests, signed tag v1.2.0, verification, push
+```
+
 ## Tests
 
 Integration tests generate a throwaway age key and fake fixtures in a private temp directory. They

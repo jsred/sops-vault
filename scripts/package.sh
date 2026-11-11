@@ -3,7 +3,9 @@
 set -euo pipefail
 cd "${0:A:h}/.."
 
-VERSION="${VERSION:-1.0.0}"
+# Release builds get VERSION from the updater; local builds use the newest tag, or 0.0.0.
+VERSION="${VERSION:-$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null | sed 's/^v//')}"
+VERSION="${VERSION:-0.0.0}"
 APP="dist/SOPS Vault.app"
 BUILD_DIR="$(mktemp -d)"
 trap 'rm -rf "$BUILD_DIR"' EXIT
