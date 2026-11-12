@@ -335,6 +335,10 @@ struct SyncBar: View {
                     Button("Bring In Local Changes", action: model.incorporateLocalChanges).font(.caption).disabled(model.busy)
                 }
                 if status.isGit {
+                    Button("Update Local Copy", action: model.pullLocalCopy)
+                        .font(.caption)
+                        .disabled(model.busy || model.unsavedCount > 0)
+
                     Menu {
                         Toggle("Always open a PR in this repository", isOn: Binding(
                             get: { model.status?.alwaysPullRequest ?? false }, set: { model.setAlwaysPullRequest($0) }))

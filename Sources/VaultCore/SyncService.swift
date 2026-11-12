@@ -122,6 +122,18 @@ public actor SyncService {
         return (Repo(git: git, root: root, path: path, branch: branch, remote: remote), "")
     }
 
+    /// Explicitly update the checkout, without merging or stashing local work.
+    public func pullLocalCopy(for file: URL) throws {
+        guard let git, let (root, _) = git.locate(file),
+              let state = try? git.run(["status", "--porcelain", "--untracked-files=all"], in: root),
+              state.status == 0, state.output.isEmpty,
+              let result = try? git.run(["-c", "core.hooksPath=/dev/null", "pull", "--ff-only", "--no-rebase", "--no-autostash"], in: root, timeout: 60),
+              result.status == 0 else {
+            throw NSError(domain: "SOPSVault.Pull", code: 1, userInfo: [NSLocalizedDescriptionKey:
+                String(localized: "Could not update the local copy. Check the connection, branch upstream, and that the repository has no local changes or diverging commits.")])
+        }
+    }
+
     public func setAlwaysPullRequest(for file: URL, _ enabled: Bool) {
         if let git, let (root, _) = git.locate(file) { memory.setAlwaysPullRequest(root.path, enabled) }
     }

@@ -224,3 +224,231 @@ import Testing
         #expect(reread.root[[.key("API_TOKEN")]] == .string("FAKE_changed"))
     }
 }
+
+extension SyncTests {
+    @Test func pullFastForwardsAndRefusesLocalChangesAndDivergence() async throws {
+        let a = try makeOrigin()
+        let b = try clone("b")
+        let file = b.appendingPathComponent("secrets.enc.env")
+        let sync = service()
+        try "remote".write(to: a.appendingPathComponent("readme"), atomically: true, encoding: .utf8)
+        try git("add", ".", in: a); try git("commit", "-qm", "remote", in: a); try git("push", "-q", in: a)
+        try await sync.pullLocalCopy(for: file)
+        #expect(try git("rev-parse", "HEAD", in: b) == git("rev-parse", "HEAD", in: a))
+        let dirty = b.appendingPathComponent("dirty")
+        try Data().write(to: dirty)
+        await #expect(throws: NSError.self) { try await sync.pullLocalCopy(for: file) }
+        try FileManager.default.removeItem(at: dirty)
+        try git("commit", "--allow-empty", "-qm", "local", in: b)
+        try git("commit", "--allow-empty", "-qm", "remote", in: a); try git("push", "-q", in: a)
+        let before = try git("rev-parse", "HEAD", in: b)
+        await #expect(throws: NSError.self) { try await sync.pullLocalCopy(for: file) }
+        #expect(try git("rev-parse", "HEAD", in: b) == before)
+    }
+
+    @Test func modifiedAndNewFilesNoOpSaveAndOfflineRejections() async throws {
+        let a = try makeOrigin()
+        let sync = service()
+        let file = a.appendingPathComponent("secrets.enc.env")
+        let loaded = try await sync.load(file, configuration: config)
+        let noop = try await sync.save(file, changes: [], displayed: loaded.document, resolution: nil, configuration: config)
+        guard case .saved(_, let message) = noop else { Issue.record("expected no-op"); return }
+        #expect(message.contains("nothing new"))
+        try encrypt("API_TOKEN=FAKE_local\nDB_URL=FAKE_db\n", name: file.lastPathComponent).write(to: file)
+        let modified = try await sync.load(file, configuration: config)
+        #expect(modified.status.localCopy == .modified)
+        #expect(modified.localChanges == [change("API_TOKEN", from: "FAKE_one", to: "FAKE_local")])
+        await #expect(throws: VaultError.self) {
+            try await sync.saveOffline(file, changes: [], displayed: loaded.document, configuration: self.config)
+        }
+        let newFile = a.appendingPathComponent("new.enc.env")
+        try encrypt("NEW=FAKE_new\n", name: newFile.lastPathComponent).write(to: newFile)
+        let newLoaded = try await sync.load(newFile, configuration: config)
+        #expect(newLoaded.status.localCopy == .newFile)
+        let saved = try await sync.save(newFile, changes: [], displayed: newLoaded.document, resolution: nil, configuration: config)
+        guard case .saved(_, let newMessage) = saved else { Issue.record("expected new file save"); return }
+        #expect(newMessage.contains("untracked"))
+        #expect(try git("log", "origin/main", "-1", "--format=%s", in: a).hasPrefix("Add new.enc.env"))
+        await sync.setAlwaysPullRequest(for: file, true)
+        #expect(try await sync.load(file, configuration: config).status.alwaysPullRequest)
+        await sync.setAlwaysPullRequest(for: file, false)
+        #expect(try await !sync.load(file, configuration: config).status.alwaysPullRequest)
+    }
+
+    /// Executable wrapper allows transport failures without networking or production remotes.
+    private func gitWrapper(_ body: String) throws -> String {
+        let url = directory.appendingPathComponent("git-\(UUID().uuidString)")
+        try ("#!/bin/sh\n" + body + "\nexec \(gitPath) \"$@\"\n").write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
+        return url.path
+    }
+
+    @Test func gitFailuresAndFallbackBranchDiscovery() throws {
+        let a = try makeOrigin()
+        let client = GitClient(path: gitPath)!
+        #expect(client.hasRef("HEAD", in: a))
+        #expect(!client.hasRef("missing", in: a))
+        #expect(client.blob("missing", "no-file", in: a) == nil)
+        #expect(client.blob(id: "missing", in: a) == nil)
+        let fallback = GitClient(path: try gitWrapper("case \"$1\" in symbolic-ref|ls-remote) exit 1;; esac"))!
+        #expect(fallback.defaultBranch(in: a) == "main")
+        #expect(fallback.defaultBranch(in: directory) == nil)
+        for (command, message) in [("rev-parse", "branch was not found"), ("hash-object", "store"), ("read-tree", "prepare"), ("commit-tree", "create")] {
+            let broken = GitClient(path: try gitWrapper("if [ \"$1\" = \(command) ]; then exit 1; fi"))!
+            do {
+                _ = try broken.commit(Data(), at: "new", onto: "HEAD", message: "fixture", in: a)
+                Issue.record("expected commit failure")
+            } catch { #expect(error.localizedDescription.contains(message)) }
+        }
+        for (text, expected) in [("non-fast-forward", PushResult.outdated), ("permission denied", .failed("You don't have permission to push to this repository.")),
+                                 ("unexpected transport failure", .failed("git could not push the change. Check the connection and try again."))] {
+            let broken = GitClient(path: try gitWrapper("if [ \"$1\" = push ]; then echo '\(text)' >&2; exit 1; fi"))!
+            #expect(broken.push("HEAD", to: "main", in: a) == expected)
+        }
+    }
+
+    @Test func fakeGitHubCLIResponses() throws {
+        let url = URL(string: "https://github.com/test/repo/pull/1")!
+        let executable = try gitWrapper("cat >/dev/null; if [ \"$2\" = create ]; then echo notice; echo '\(url.absoluteString)'; else echo OPEN; fi; exit 0")
+        let client = PullRequestClient(path: executable)
+        #expect(client.create(in: directory, slug: "test/repo", head: "change", base: "main", title: "fixture", body: "body") == url)
+        #expect(client.state(of: url, in: directory) == "OPEN")
+        let failed = PullRequestClient(path: try gitWrapper("exit 1"))
+        #expect(failed.create(in: directory, slug: nil, head: "change", base: "main", title: "fixture", body: "") == nil)
+        #expect(failed.state(of: url, in: directory) == nil)
+    }
+}
+
+extension SyncTests {
+    @Test func unavailableToolsAndRemoteFailures() async throws {
+        let a = try makeOrigin()
+        let file = a.appendingPathComponent("secrets.enc.env")
+        let deletedPath = try gitWrapper("")
+        let client = GitClient(path: deletedPath)!
+        try FileManager.default.removeItem(atPath: deletedPath)
+        #expect(client.fetch("main", in: a) == .failed)
+        #expect(client.push("HEAD", to: "main", in: a) == .failed("Could not connect to origin."))
+        #expect(client.workingBlobID("missing", in: a) == nil)
+        let emptyGH = PullRequestClient(path: try gitWrapper("exit 0"))
+        #expect(emptyGH.state(of: URL(string: "https://github.com/test/repo/pull/1")!, in: a) == nil)
+        let memory = SyncMemory(defaults: defaults)
+        defaults.set(Data("broken json".utf8), forKey: "vault.sync.files")
+        #expect(memory.offline("absent") == nil)
+        let noGit = SyncService(gitPath: "/nonexistent/git")
+        #expect(try await !noGit.load(file, configuration: config).status.isGit)
+        await #expect(throws: VaultError.self) { try await noGit.saveOffline(file, changes: [], displayed: VaultDocument(root: .object([:]), ciphertext: Data()), configuration: self.config) }
+        try git("remote", "remove", "origin", in: a)
+        #expect(try await !service().load(file, configuration: config).status.isGit)
+        try git("remote", "add", "origin", origin.path, in: a)
+        try "secrets.enc.env\n".write(to: a.appendingPathComponent(".gitignore"), atomically: true, encoding: .utf8)
+        // check-ignore intentionally ignores only untracked paths.
+        let ignored = a.appendingPathComponent("ignored.enc.env")
+        try Data(contentsOf: file).write(to: ignored)
+        try "ignored.enc.env\n".write(to: a.appendingPathComponent(".gitignore"), atomically: true, encoding: .utf8)
+        #expect(try await !service().load(ignored, configuration: config).status.isGit)
+        let unknown = SyncService(gitPath: try gitWrapper("case \"$1\" in symbolic-ref|ls-remote) exit 1;; rev-parse) if [ \"$2\" = --verify ]; then exit 1; fi;; esac"))
+        #expect(try await !unknown.load(file, configuration: config).status.isGit)
+    }
+
+    @Test func retryExhaustionPushErrorsAndPRBranchErrors() async throws {
+        let a = try makeOrigin()
+        let file = a.appendingPathComponent("secrets.enc.env")
+        let loaded = try await service().load(file, configuration: config)
+        let edit = [change("API_TOKEN", from: "FAKE_one", to: "FAKE_new")]
+        for (response, expected) in [("non-fast-forward", "changed several times"), ("permission denied", "permission"), ("protected branch", "rejected the PR branch")] {
+            let path = try gitWrapper("if [ \"$1\" = push ]; then echo '\(response)' >&2; exit 1; fi")
+            let sync = SyncService(memory: SyncMemory(defaults: defaults), gitPath: path, ghPath: "/missing/gh")
+            do { _ = try await sync.save(file, changes: edit, displayed: loaded.document, resolution: nil, configuration: config); Issue.record("must fail") }
+            catch { #expect(error.localizedDescription.contains(expected)) }
+        }
+        let path = try gitWrapper("if [ \"$1\" = push ]; then case \"$*\" in *refs/heads/main) echo 'protected branch';; *) echo 'permission denied';; esac; exit 1; fi")
+        let sync = SyncService(memory: SyncMemory(defaults: defaults), gitPath: path, ghPath: "/missing/gh")
+        await #expect(throws: VaultError.self) { try await sync.save(file, changes: edit, displayed: loaded.document, resolution: nil, configuration: self.config) }
+        let pr = PullRequestRef(branch: "main", url: nil)
+        SyncMemory(defaults: defaults).setPullRequest(a.path + "|secrets.enc.env", pr)
+        // Keep the remembered PR alive by failing its fetch, while the base fetch succeeds.
+        let marker = directory.appendingPathComponent("fetch-count")
+        let rejecting = try gitWrapper("if [ \"$1\" = fetch ]; then if [ -e '\(marker.path)' ]; then rm '\(marker.path)'; exit 1; else touch '\(marker.path)'; fi; fi\nif [ \"$1\" = push ]; then echo 'protected branch'; exit 1; fi")
+        let prSync = SyncService(memory: SyncMemory(defaults: defaults), gitPath: rejecting, ghPath: "/missing/gh")
+        do { _ = try await prSync.save(file, changes: edit, displayed: loaded.document, resolution: nil, configuration: config); Issue.record("must reject PR") }
+        catch { #expect(error.localizedDescription.contains("PR branch")) }
+    }
+}
+
+extension SyncTests {
+    @Test func missingBranchAndSuccessfulPushWithChangedRemoteView() async throws {
+        let a = try makeOrigin()
+        let file = a.appendingPathComponent("secrets.enc.env")
+        let missing = try gitWrapper("if [ \"$1\" = rev-parse ] && [ \"$2\" = --verify ]; then exit 1; fi")
+        let sync = SyncService(gitPath: missing, ghPath: "/missing/gh")
+        await #expect(throws: VaultError.self) { try await sync.load(file, configuration: self.config) }
+        let loaded = try await service().load(file, configuration: config)
+        // Simulate a successful push followed by a refresh that has a different root.
+        let raced = SyncService(gitPath: try gitWrapper("if [ \"$1\" = push ]; then exit 0; fi"), ghPath: "/missing/gh")
+        let result = try await raced.save(file, changes: [change("API_TOKEN", from: "FAKE_one", to: "FAKE_updated")],
+                                          displayed: loaded.document, resolution: nil, configuration: config)
+        guard case .saved(let saved, _) = result else { Issue.record("expected saved"); return }
+        #expect(saved.document.root[[.key("API_TOKEN")]] == .string("FAKE_updated"))
+        #expect(try await originValue("API_TOKEN") == .string("FAKE_one"))
+        let client = GitClient(path: gitPath)!
+        #expect(client.fetch("absent", in: a) == .missingRef)
+        let falseRoot = GitClient(path: try gitWrapper("if [ \"$1\" = rev-parse ] && [ \"$2\" = --show-toplevel ]; then echo /elsewhere; exit 0; fi"))!
+        #expect(falseRoot.locate(file) == nil)
+    }
+
+    @Test func pullRequestCLIStateAndCompareFallback() async throws {
+        let a = try makeOrigin()
+        let file = a.appendingPathComponent("secrets.enc.env")
+        let memory = SyncMemory(defaults: defaults)
+        let path = try gitWrapper("if [ \"$1\" = remote ] && [ \"$2\" = get-url ]; then echo https://github.com/test/repo.git; exit 0; fi")
+        let state = directory.appendingPathComponent("pr-state")
+        try "OPEN".write(to: state, atomically: true, encoding: .utf8)
+        let gh = try gitWrapper("cat >/dev/null; if [ \"$2\" = create ]; then echo https://github.com/test/repo/pull/1; else cat '\(state.path)'; fi; exit 0")
+        let sync = SyncService(memory: memory, gitPath: path, ghPath: gh)
+        await sync.setAlwaysPullRequest(for: file, true)
+        let loaded = try await sync.load(file, configuration: config)
+        let outcome = try await sync.save(file, changes: [change("API_TOKEN", from: "FAKE_one", to: "FAKE_pr")],
+                                         displayed: loaded.document, resolution: nil, configuration: config)
+        guard case .saved(let saved, _) = outcome else { Issue.record("expected PR"); return }
+        #expect(saved.status.pullRequest?.url?.absoluteString == "https://github.com/test/repo/pull/1")
+        #expect(try await sync.load(file, configuration: config).status.pullRequest != nil)
+        try "MERGED".write(to: state, atomically: true, encoding: .utf8)
+        #expect(try await sync.load(file, configuration: config).status.pullRequest == nil)
+        try git("push", "-q", "origin", "--delete", saved.status.pullRequest!.branch, in: a)
+        let fallback = SyncService(memory: memory, gitPath: path, ghPath: "/missing/gh")
+        let fresh = try await fallback.load(file, configuration: config)
+        let result = try await fallback.save(file, changes: [change("DB_URL", from: "FAKE_db", to: "FAKE_changed")],
+                                            displayed: fresh.document, resolution: nil, configuration: config)
+        guard case .saved(let compare, _) = result else { Issue.record("expected fallback"); return }
+        #expect(compare.status.pullRequest?.url?.absoluteString.contains("/compare/main...") == true)
+        // External edits replace an offline save: its bookkeeping must be discarded.
+        memory.setOffline(a.path + "|secrets.enc.env", blob: "outdated", base: nil)
+        _ = try await fallback.load(file, configuration: config)
+        #expect(memory.offline(a.path + "|secrets.enc.env") == nil)
+    }
+}
+
+extension SyncTests {
+    @Test func untrackedFilesWithRemoteBaseAndNewFilePR() async throws {
+        let a = try makeOrigin()
+        let sync = service()
+        let file = a.appendingPathComponent("new.enc.env")
+        try encrypt("NEW=FAKE_new\n", name: file.lastPathComponent).write(to: file)
+        let loaded = try await sync.load(file, configuration: config)
+        _ = try await sync.save(file, changes: [], displayed: loaded.document, resolution: nil, configuration: config)
+        try encrypt("NEW=FAKE_local\n", name: file.lastPathComponent).write(to: file)
+        let local = try await sync.load(file, configuration: config)
+        await #expect(throws: VaultError.self) {
+            try await sync.saveOffline(file, changes: [], displayed: local.document, configuration: self.config)
+        }
+        #expect(local.status.localCopy == .modified)
+        #expect(local.localChanges == [change("NEW", from: "FAKE_new", to: "FAKE_local")])
+        let prFile = a.appendingPathComponent("pr-new.enc.env")
+        try encrypt("NEW=FAKE_pr\n", name: prFile.lastPathComponent).write(to: prFile)
+        await sync.setAlwaysPullRequest(for: prFile, true)
+        let newPR = try await sync.load(prFile, configuration: config)
+        let result = try await sync.save(prFile, changes: [], displayed: newPR.document, resolution: nil, configuration: config)
+        guard case .saved(let saved, _) = result else { Issue.record("expected new file PR"); return }
+        #expect(saved.status.pullRequest != nil)
+    }
+}

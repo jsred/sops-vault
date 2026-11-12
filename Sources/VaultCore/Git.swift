@@ -14,8 +14,8 @@ public struct GitClient: Sendable {
         executable = URL(fileURLWithPath: found)
     }
 
-    static func environment(extra: [String: String] = [:]) -> [String: String] {
-        var env = ProcessInfo.processInfo.environment
+    static func environment(extra: [String: String] = [:], base: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
+        var env = base
         for key in env.keys where key.hasPrefix("GIT_") || key.hasPrefix("SOPS_") { env[key] = nil }
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" + (env["PATH"].map { ":" + $0 } ?? "")
         env["GIT_TERMINAL_PROMPT"] = "0"

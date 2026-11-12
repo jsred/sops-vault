@@ -4,7 +4,7 @@ import Testing
 
 /// All identities and fixtures are generated under a fresh private temp directory.
 /// Never uses the user's real identity, repos or secret files.
-@Suite(.timeLimit(.minutes(1))) final class IntegrationTests {
+@Suite(.serialized, .timeLimit(.minutes(1))) final class IntegrationTests {
     private var directory: URL!
     private var config: SOPSConfiguration!
     private var recipient = ""
@@ -195,5 +195,77 @@ import Testing
             let text = String(decoding: bytes, as: UTF8.self)
             for token in tokens { #expect(!(text.contains(token)), "Plaintext found in test artifact") }
         }
+    }
+}
+
+extension IntegrationTests {
+    @Test func invalidENVPathsTypesAndInputFiles() async throws {
+        let url = try fixture(.dotenv, plaintext: "KEY=FAKE_safe\n")
+        let service = SOPSService()
+        let doc = try await service.load(url: url, configuration: config)
+        for (path, value) in [([PathPart.key("bad-key")], JSONValue.string("fake")), ([.key("KEY")], .number(1))] {
+            await #expect(throws: VaultError.self) {
+                try await service.mutate(url: url, expectedCiphertext: doc.ciphertext, path: path, value: value, configuration: self.config)
+            }
+        }
+        await #expect(throws: VaultError.self) { try await service.ciphertext(of: self.directory) }
+        let link = directory.appendingPathComponent("link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: url)
+        await #expect(throws: VaultError.self) { try await service.ciphertext(of: link) }
+        let large = directory.appendingPathComponent("large")
+        try Data(repeating: 0, count: 8 * 1024 * 1024 + 1).write(to: large)
+        await #expect(throws: VaultError.self) { try await service.ciphertext(of: large) }
+        #expect(try Data(contentsOf: url) == doc.ciphertext)
+    }
+
+    private func fakeSOPS(_ body: String) throws -> SOPSConfiguration {
+        let url = directory.appendingPathComponent("fake-sops-\(UUID().uuidString)")
+        try ("#!/bin/sh\n" + body).write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
+        return SOPSConfiguration(executablePath: url.path, ageKeyPath: config.ageKeyPath)
+    }
+
+    @Test func rejectsInvalidDecryptedOutputAndFailedOrUnverifiedEdits() async throws {
+        let service = SOPSService()
+        for output in ["[]", "invalid-json"] {
+            let fake = try fakeSOPS("cat >/dev/null; printf '%s' '\(output)'\n")
+            await #expect(throws: VaultError.self) { try await service.decrypt(ciphertext: Data(), format: .json, configuration: fake) }
+        }
+        let change = SecretChange(path: [.key("KEY")], original: .string("old"), value: .string("new"))
+        for status in [0, 1] {
+            let fake = try fakeSOPS("cat >/dev/null; if [ \"$1\" = decrypt ]; then printf '%s' '{\"KEY\":\"old\"}'; else exit \(status); fi\n")
+            await #expect(throws: VaultError.self) {
+                try await service.apply([change], to: Data("ciphertext".utf8), format: .json, near: self.directory, configuration: fake)
+            }
+            #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).allSatisfy { !$0.hasPrefix(".sops-vault-") })
+        }
+    }
+
+    @Test func filesystemFailuresPreserveOriginalAndCleanStaging() async throws {
+        let url = try fixture(.json, plaintext: #"{"KEY":"FAKE_safe"}"#)
+        let original = try Data(contentsOf: url)
+        let failingCreate = SOPSService(createFile: { _, _ in false }, renameFile: { _, _ in -1 })
+        await #expect(throws: VaultError.self) { try await failingCreate.replace(url, expected: original, with: Data()) }
+        await #expect(throws: VaultError.self) {
+            try await failingCreate.apply([SecretChange(path: [.key("KEY")], original: .string("FAKE_safe"), value: .string("changed"))],
+                                          to: original, format: .json, near: self.directory, configuration: self.config)
+        }
+        let failingRename = SOPSService(createFile: { url, data in
+            FileManager.default.createFile(atPath: url.path, contents: data, attributes: [.posixPermissions: 0o600])
+        }, renameFile: { _, _ in -1 })
+        await #expect(throws: VaultError.self) { try await failingRename.replace(url, expected: original, with: Data()) }
+        #expect(try Data(contentsOf: url) == original)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).allSatisfy { !$0.hasPrefix(".sops-vault-") })
+    }
+}
+
+extension IntegrationTests {
+    @Test func replacementRejectsConcurrentChange() async throws {
+        let url = try fixture(.json, plaintext: #"{"KEY":"fake"}"#)
+        let original = try Data(contentsOf: url)
+        await #expect(throws: VaultError.self) {
+            try await SOPSService().replace(url, expected: Data("stale".utf8), with: Data())
+        }
+        #expect(try Data(contentsOf: url) == original)
     }
 }

@@ -26,6 +26,7 @@ as the source of truth:
 
 - Opening a file runs `git fetch` and shows **origin's latest version**. The status bar says whether your
   working copy is up to date, behind (`git pull`), or has edits that are not in origin.
+- **Update Local Copy** runs `git pull --ff-only` on the checked-out branch using its configured upstream. It requires a clean repository and no pending edits in the app; divergent branches are left for manual resolution.
 - **Guardar cambios** fetches again and replays your pending edits key by key on origin's latest version.
   It then commits only that encrypted file on top of origin's branch and pushes. The commit is built with git
   plumbing on a temporary index: your checked-out branch, index and working tree are never touched, so
@@ -110,6 +111,36 @@ swift test                  # with Xcode
 swift test --disable-xctest -Xswiftc -plugin-path \
   -Xswiftc /Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing
 ```
+
+## Pre-push coverage gate
+
+Install the repository hook once per clone (already installed in this checkout):
+
+```sh
+./scripts/install-hooks.sh
+```
+
+Pushes to the remote named `origin` require passing Swift tests and **at least 100% aggregate
+line coverage across every `Sources/VaultCore/*.swift` file**. SwiftUI in `Sources/SOPSVault`
+is not covered by the current test target. No VaultCore files are excluded; missing, empty or
+invalid reports fail the check. The comparison uses exact counts, without rounding up.
+
+The gate runs the process-heavy tests serially to avoid blocking the Swift concurrency pool.
+The hook tests each distinct pushed commit tip (including tags) in a temporary source snapshot,
+so uncommitted edits cannot make a failing commit pass. It leaves the checkout and index alone.
+Deleting refs requires no coverage run. Each snapshot gets a fresh build; expect pushes to take
+longer. Requirements are the same as the integration tests above, plus Python 3.
+
+Run the same gate against your working files before committing:
+
+```sh
+./scripts/check-coverage.sh
+python3 scripts/test-coverage.py  # regression tests for the policy and hook
+```
+
+A local Git hook can be bypassed with `--no-verify` and is not installed automatically by cloning.
+Server-side enforcement would additionally require CI and branch protection. The app's encrypted
+secret pushes explicitly skip hooks in the repositories it manages, as described above.
 
 ## Translations
 

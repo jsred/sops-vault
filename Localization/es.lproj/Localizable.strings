@@ -218,3 +218,6 @@
 "Your local copy's changes were added. Click “Save Changes” to push them." = "Se agregaron los cambios de tu copia local. Tocá «Guardar cambios» para subirlos.";
 "Your secrets, under lock" = "Tus secretos, bajo llave";
 "Your vault is locked" = "Tu bóveda está bloqueada";
+
+"Update Local Copy" = "Actualizar copia local";
+"Could not update the local copy. Check the connection, branch upstream, and that the repository has no local changes or diverging commits." = "No se pudo actualizar la copia local. Revisá la conexión, la rama de seguimiento y que el repositorio no tenga cambios locales ni commits divergentes.";

@@ -61,7 +61,7 @@ public enum Discovery {
 
     public static func isCandidate(_ url: URL) -> Bool {
         guard let info = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]),
-              info.isRegularFile == true, info.isSymbolicLink != true, (info.fileSize ?? 0) <= 8 * 1024 * 1024 else { return false }
+              info.isRegularFile == true, info.isSymbolicLink != true, let size = info.fileSize, size <= 8 * 1024 * 1024 else { return false }
         let name = url.lastPathComponent.lowercased()
         if [".enc.env", ".enc.yaml", ".enc.yml", ".enc.json"].contains(where: name.hasSuffix) { return true }
         // Restrict content sniffing to text-like files; never read binary assets or age identities.

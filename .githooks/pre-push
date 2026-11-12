@@ -1,0 +1,23 @@
+#!/bin/bash
+set -euo pipefail
+[[ "${1:-}" == origin ]] || exit 0
+root=$(git rev-parse --show-toplevel)
+# Validate the committed tips being pushed, not potentially different working files.
+# Detached archives also leave the user's checkout and index untouched.
+temp=$(mktemp -d "${TMPDIR:-/tmp}/sops-vault-prepush.XXXXXX")
+trap 'rm -rf "$temp"' EXIT
+checked=' '
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [[ "$local_sha" =~ ^0+$ ]] && continue
+    commit=$(git rev-parse --verify "$local_sha^{commit}")
+    [[ "$checked" == *" $commit "* ]] && continue
+    checked+="$commit "
+    snapshot="$temp/$commit"
+    mkdir "$snapshot"
+    git archive "$commit" | tar -x -C "$snapshot"
+    echo "Checking coverage for $local_ref ($commit)…"
+    # Use the installed policy even when pushing an older commit without these scripts.
+    mkdir -p "$snapshot/scripts"
+    cp "$root/scripts/check-coverage.sh" "$root/scripts/check-coverage.py" "$snapshot/scripts/"
+    bash "$snapshot/scripts/check-coverage.sh"
+done

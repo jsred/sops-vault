@@ -69,15 +69,17 @@ public enum ProcessRunner {
 }
 
 /// Non-blocking reader for one pipe. `finish()` reads what is left and stops; it never waits for EOF.
-private final class PipeDrain: @unchecked Sendable {
+final class PipeDrain: @unchecked Sendable {
     private let handle: FileHandle  // Owns the descriptor for the drain's lifetime.
     private let fd: Int32
     private let queue = DispatchQueue(label: "sops-vault.pipe-drain")
     private let source: DispatchSourceRead
     private var data = Data()
     private var finished = false
+    private let readBytes: (Int32, UnsafeMutableRawPointer?, Int) -> Int
 
-    init(_ handle: FileHandle) {
+    init(_ handle: FileHandle, readBytes: @escaping (Int32, UnsafeMutableRawPointer?, Int) -> Int = { read($0, $1, $2) }) {
+        self.readBytes = readBytes
         self.handle = handle
         fd = handle.fileDescriptor
         _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
@@ -92,12 +94,13 @@ private final class PipeDrain: @unchecked Sendable {
     private func readAvailable() -> Bool {
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
         while true {
-            let count = buffer.withUnsafeMutableBytes { read(fd, $0.baseAddress, $0.count) }
+            let count = buffer.withUnsafeMutableBytes { readBytes(fd, $0.baseAddress, $0.count) }
             if count > 0 { data.append(contentsOf: buffer[0..<count]); continue }
-            if count == 0 { return true }
+            if count == 0 { break }
             if errno == EINTR { continue }
             return errno != EAGAIN && errno != EWOULDBLOCK
         }
+        return true
     }
 
     @discardableResult func finish() -> Data {

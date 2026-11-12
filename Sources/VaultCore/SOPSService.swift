@@ -3,6 +3,7 @@ import Foundation
 public struct SOPSConfiguration: Sendable {
     public var executablePath: String
     public var ageKeyPath: String
+    var processEnvironment: @Sendable () -> [String: String] = { ProcessInfo.processInfo.environment }
     public init(executablePath: String = "", ageKeyPath: String = "~/.config/sops/age/keys.txt") {
         self.executablePath = executablePath
         self.ageKeyPath = ageKeyPath
@@ -14,7 +15,7 @@ public struct SOPSConfiguration: Sendable {
             candidates = [(executablePath as NSString).expandingTildeInPath]
         } else {
             candidates = ["/opt/homebrew/bin/sops", "/usr/local/bin/sops"] +
-                (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map { "\($0)/sops" }
+                (processEnvironment()["PATH"] ?? "").split(separator: ":").map { "\($0)/sops" }
         }
         guard let path = candidates.first(where: { fm.isExecutableFile(atPath: $0) }) else {
             throw VaultError.localized("SOPS was not found. Install it with “brew install sops age” or choose its binary in Settings.")
@@ -31,7 +32,7 @@ public struct SOPSConfiguration: Sendable {
         // Deliberately do not inherit SOPS_*, cloud credentials or editor configuration.
         var env = ["PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin", "SOPS_AGE_KEY_FILE": path,
                    "SOPS_DECRYPTION_ORDER": "age", "LANG": "en_US.UTF-8"]
-        if let home = ProcessInfo.processInfo.environment["HOME"] { env["HOME"] = home }
+        if let home = processEnvironment()["HOME"] { env["HOME"] = home }
         env["SOPS_AGE_SSH_PRIVATE_KEY_FILE"] = "/dev/null"
         return env
     }
@@ -39,7 +40,16 @@ public struct SOPSConfiguration: Sendable {
 
 /// Serialized off the main actor. Only encrypted bytes are ever written by this service.
 public actor SOPSService {
+    private var createFile: @Sendable (URL, Data) -> Bool = { url, data in
+        FileManager.default.createFile(atPath: url.path, contents: data, attributes: [.posixPermissions: 0o600])
+    }
+    private var renameFile: @Sendable (URL, URL) -> Int32 = { rename($0.path, $1.path) }
     public init() {}
+    // Internal filesystem seam for deterministic failure tests; production uses the real operations.
+    init(createFile: @escaping @Sendable (URL, Data) -> Bool,
+         renameFile: @escaping @Sendable (URL, URL) -> Int32) {
+        self.createFile = createFile; self.renameFile = renameFile
+    }
     public func load(url: URL, configuration: SOPSConfiguration) throws -> VaultDocument {
         let bytes = try readCiphertext(url)
         return try decrypt(bytes, format: .detect(url: url, data: bytes), configuration: configuration)
@@ -83,7 +93,7 @@ public actor SOPSService {
                                                 attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: staging) }
         let staged = staging.appendingPathComponent("secret.\(format == .dotenv ? "env" : format.rawValue)")
-        guard FileManager.default.createFile(atPath: staged.path, contents: ciphertext, attributes: [.posixPermissions: 0o600]) else {
+        guard createFile(staged, ciphertext) else {
             throw VaultError.localized("The encrypted write could not be prepared. Check the folder's permissions.")
         }
         for change in effective {
@@ -113,13 +123,13 @@ public actor SOPSService {
                                                 attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: staging) }
         let staged = staging.appendingPathComponent(url.lastPathComponent)
-        guard FileManager.default.createFile(atPath: staged.path, contents: ciphertext, attributes: [.posixPermissions: 0o600]) else {
+        guard createFile(staged, ciphertext) else {
             throw VaultError.localized("The encrypted write could not be prepared. Check the folder's permissions.")
         }
         if let expected { guard try readCiphertext(url) == expected else { throw conflict } }
         let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
         if let mode = attrs[.posixPermissions] { try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: staged.path) }
-        guard rename(staged.path, url.path) == 0 else {
+        guard renameFile(staged, url) == 0 else {
             throw VaultError.localized("The encrypted file could not be replaced. Check the permissions. The original is intact.")
         }
     }
@@ -167,7 +177,7 @@ public actor SOPSService {
         guard info.isRegularFile == true, info.isSymbolicLink != true else {
             throw VaultError.localized("Choose a regular file. For safety, symbolic links are not edited.")
         }
-        guard (info.fileSize ?? 0) <= 8 * 1024 * 1024 else {
+        guard let size = info.fileSize, size <= 8 * 1024 * 1024 else {
             throw VaultError.localized("The file is larger than the 8 MB limit.")
         }
         return try Data(contentsOf: url)

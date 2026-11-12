@@ -34,7 +34,9 @@ public enum JSONValue: Equatable, Sendable, Codable {
         }
     }
 
-    public var data: Data { (try? JSONEncoder().encode(self)) ?? Data() }
+    public var data: Data { encoded(using: JSONEncoder().encode) }
+    // Keep encoding failures contained; the encoder can be supplied in failure tests.
+    func encoded(using encode: (JSONValue) throws -> Data) -> Data { (try? encode(self)) ?? Data() }
     public var json: String { String(decoding: data, as: UTF8.self) }
     public var display: String { if case .string(let v) = self { return v }; return json }
     public var typeName: String {

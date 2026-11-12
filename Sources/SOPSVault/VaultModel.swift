@@ -169,6 +169,25 @@ import VaultCore
             pendingByFile = pendingByFile.filter { ids.contains($0.key) }
         }
     }
+    func pullLocalCopy() {
+        guard !locked, !busy, unsavedCount == 0, let file = selectedFile else { return }
+        busy = true
+        let token = generation
+        Task {
+            do {
+                try await sync.pullLocalCopy(for: file.url)
+                guard generation == token, !locked else { return }
+                busy = false
+                loadSelection()
+                rescan()
+            } catch {
+                guard generation == token, !locked else { return }
+                busy = false
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
     func loadSelection() {
         generation = UUID(); let token = generation
         document = nil; status = nil; revealed = []; editor = nil; error = nil; search = ""
